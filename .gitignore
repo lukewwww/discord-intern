@@ -211,3 +211,6 @@ __marimo__/
 /data/**
 !/data/**/
 !/data/**/.gitkeep
+
+# Local Cursor Rules
+.cursor/rules/local-env.mdc

@@ -144,7 +144,7 @@ class WebFetcher:
         while True:
             empty_tags = [
                 tag for tag in soup.find_all(True)
-                if not tag.contents and not tag.string and tag.name not in {'br', 'hr'}
+                if tag.name not in {'br', 'hr'} and not tag.find(True) and not tag.get_text(strip=True)
             ]
             if not empty_tags:
                 break
@@ -158,6 +158,3 @@ class WebFetcher:
         content = re.sub(r'\s+', ' ', content).strip()
 
         return content
-
-
-

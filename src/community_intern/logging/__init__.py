@@ -27,8 +27,8 @@ def init_logging(settings: LoggingSettings) -> None:
         root_logger.removeHandler(handler)
 
     formatter = logging.Formatter(
-        fmt="ts=%(asctime)s level=%(levelname)s logger=%(name)s msg=%(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S%z",
+        fmt="[%(asctime)s][%(levelname)s][%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     stream_handler = logging.StreamHandler()
@@ -65,6 +65,3 @@ def init_logging(settings: LoggingSettings) -> None:
 
 
 __all__ = ["init_logging"]
-
-
-
