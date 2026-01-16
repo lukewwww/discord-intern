@@ -180,7 +180,12 @@ class AIClientImpl(AIClient):
             raise RuntimeError("Max retries exceeded")
 
         try:
-            return await _make_request()
+            logger.info("Starting LLM summarization for source_id=%s", source_id)
+            start_time = asyncio.get_running_loop().time()
+            result = await _make_request()
+            duration = asyncio.get_running_loop().time() - start_time
+            logger.info("LLM summarization completed. source_id=%s duration=%.2fs", source_id, duration)
+            return result
         except Exception:
             logger.exception("Failed to summarize source for knowledge base index. source_id=%s", source_id)
             raise

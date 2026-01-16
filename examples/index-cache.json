@@ -7,6 +7,7 @@
       "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
       "summary_text": "Project overview and quick start steps.\nUse this when you need setup instructions and basic concepts.",
       "last_indexed_at": "2026-01-16T00:00:00Z",
+      "summary_pending": false,
       "file": {
         "rel_path": "getting-started.txt",
         "size_bytes": 1234,
@@ -18,13 +19,13 @@
       "content_hash": "2222222222222222222222222222222222222222222222222222222222222222",
       "summary_text": "Official documentation page covering API usage and examples.\nUse this when you need authoritative reference details.",
       "last_indexed_at": "2026-01-16T00:00:00Z",
+      "summary_pending": false,
       "url": {
         "url": "https://example.com/docs",
         "last_fetched_at": "2026-01-16T00:00:00Z",
         "etag": "W/\"abc123\"",
         "last_modified": "Thu, 15 Jan 2026 12:00:00 GMT",
         "fetch_status": "success",
-        "consecutive_failures": 0,
         "next_check_at": "2026-01-17T00:00:00Z"
       }
     }

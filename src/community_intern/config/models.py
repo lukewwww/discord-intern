@@ -52,10 +52,15 @@ class KnowledgeBaseSettings(BaseModel):
 
     sources_dir: str
     index_path: str
+    index_cache_path: str
     links_file_path: str
 
     web_fetch_timeout_seconds: float
     web_fetch_cache_dir: str
+
+    url_refresh_min_interval_seconds: float
+    runtime_refresh_tick_seconds: float
+    file_watch_debounce_seconds: float
 
     max_source_bytes: int
     max_snippet_chars: int

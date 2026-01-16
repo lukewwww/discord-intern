@@ -146,10 +146,15 @@ ai:
 kb:
   sources_dir: "data/knowledge-base/sources"
   index_path: "data/knowledge-base/index.txt"
+  index_cache_path: "data/knowledge-base/index-cache.json"
   links_file_path: "data/knowledge-base/links.txt"
 
   web_fetch_timeout_seconds: 30
   web_fetch_cache_dir: "data/knowledge-base/web-cache"
+
+  url_refresh_min_interval_seconds: 3600
+  runtime_refresh_tick_seconds: 300
+  file_watch_debounce_seconds: 2
 
   max_source_bytes: 2000000
   max_snippet_chars: 1200

@@ -47,6 +47,15 @@ async def _stop_adapter_gracefully(adapter: DiscordBotAdapter, *, timeout_second
         logger.exception("Unexpected error during shutdown.")
 
 
+def _log_index_task_result(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.exception("Knowledge base indexing failed.")
+
+
 async def _load_config(args: argparse.Namespace):
     loader = YamlConfigLoader()
     request = ConfigLoadRequest(
@@ -65,6 +74,10 @@ async def _run_bot(args: argparse.Namespace) -> None:
     kb = FileSystemKnowledgeBase(config=config.kb, ai_client=ai_client)
     ai_client.set_kb(kb)
 
+    index_task = asyncio.create_task(kb.build_index())
+    index_task.add_done_callback(_log_index_task_result)
+    kb.start_runtime_refresh()
+
     adapter = DiscordBotAdapter(config=config, ai_client=ai_client)
     try:
         if args.run_seconds is not None:
@@ -73,6 +86,13 @@ async def _run_bot(args: argparse.Namespace) -> None:
             await adapter.start()
     finally:
         await _stop_adapter_gracefully(adapter)
+        await kb.stop_runtime_refresh()
+        if index_task and not index_task.done():
+            index_task.cancel()
+            try:
+                await index_task
+            except asyncio.CancelledError:
+                logger.info("Knowledge base indexing task cancelled during shutdown.")
 
 
 async def _init_kb(args: argparse.Namespace) -> None:

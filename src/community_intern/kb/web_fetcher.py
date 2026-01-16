@@ -49,7 +49,7 @@ class WebFetcher:
             await self._playwright.stop()
             self._playwright = None
 
-    async def fetch(self, url: str) -> str:
+    async def fetch(self, url: str, *, force_refresh: bool = False) -> str:
         """
         Fetch URL content using a headless browser to wait for dynamic content.
         Returns the inner HTML of the <body> tag.
@@ -63,7 +63,7 @@ class WebFetcher:
         url_hash = hashlib.sha256(url.encode()).hexdigest()
         cache_file = cache_dir / url_hash
 
-        if cache_file.exists():
+        if cache_file.exists() and not force_refresh:
             logger.debug("Using cached URL content. url=%s", url)
             return cache_file.read_text(encoding="utf-8")
 
@@ -109,6 +109,14 @@ class WebFetcher:
         finally:
             if should_close:
                 await self.stop()
+
+    def get_cached_content(self, url: str) -> Optional[str]:
+        cache_dir = Path(self.config.web_fetch_cache_dir)
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        cache_file = cache_dir / url_hash
+        if not cache_file.exists():
+            return None
+        return cache_file.read_text(encoding="utf-8")
 
     def _clean_content(self, html_content: str) -> str:
         """

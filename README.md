@@ -13,12 +13,11 @@ Community Intern is an AI and LLM powered Discord FAQ assistant that monitors se
 
 ## Key features
 
-
 - **AI-generated, source-grounded answers**: An LLM generates answers from your documentation sources and can include citations back to those sources.
 - **Guided retrieval for reliable source selection**: Uses an LLM-guided selection flow (instead of embedding-only RAG) to pick the best sources for short or ambiguous questions.
 - **Knowledge base from files and links**: Uses a local folder of text sources and can incorporate web pages referenced by links, including JavaScript-rendered pages that require a headless browser to fully load before content extraction.
 - **Token-efficient web ingestion**: After fetching web pages, the HTML content is cleaned to keep only key content, reducing LLM token usage during indexing and answering.
-- **Persistent KB cache for web content and index updates**: Stores cache metadata on disk so index rebuilds can reuse existing summaries for both files and links, avoiding repeated LLM summarization and reducing redundant downloads.
+- **Incremental updates and auto-refresh**: Automatically monitors and updates the knowledge base when local files or web sources change. Uses a persistent cache to process only changed content, avoiding redundant LLM summarization and network requests.
 - **Bring your own LLM**: Choose which LLM provider and model to use via configuration.
 - **Thread-first replies**: Answers live in message-backed threads rather than cluttering the channel.
 - **Configurable scope**: Communities can tune what kinds of questions are considered answerable without changing code.

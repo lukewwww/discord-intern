@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
-from typing import Sequence, Set
+from typing import Sequence
 
 from community_intern.ai.interfaces import AIClient
 from community_intern.config.models import KnowledgeBaseSettings
 from community_intern.kb.interfaces import IndexEntry, SourceContent
+from community_intern.kb.cache_manager import KnowledgeBaseCacheManager
 from community_intern.kb.web_fetcher import WebFetcher
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,8 @@ class FileSystemKnowledgeBase:
     def __init__(self, config: KnowledgeBaseSettings, ai_client: AIClient):
         self.config = config
         self.ai_client = ai_client
+        self._index_lock = asyncio.Lock()
+        self._cache_manager = KnowledgeBaseCacheManager(config=config, ai_client=ai_client, lock=self._index_lock)
 
     def _normalize_file_source_id(self, *, source_id: str, sources_dir: Path) -> str:
         """
@@ -59,103 +63,14 @@ class FileSystemKnowledgeBase:
     async def build_index(self) -> None:
         """Build the startup index artifact on disk."""
         logger.info("Starting knowledge base index build.")
-        sources_dir = Path(self.config.sources_dir)
-        if not sources_dir.exists():
-            logger.warning("Knowledge base sources directory is missing. path=%s", sources_dir)
-            return
+        await self._cache_manager.build_index_incremental()
+        logger.info("Knowledge base index build completed.")
 
-        # 1. Gather sources
-        file_sources: Set[Path] = set()
-        url_sources: Set[str] = set()
+    def start_runtime_refresh(self) -> None:
+        self._cache_manager.start_runtime_refresh()
 
-        # Load URLs from links file
-        links_file = Path(self.config.links_file_path)
-        if links_file.exists():
-            try:
-                content = links_file.read_text(encoding="utf-8")
-                for line in content.splitlines():
-                    url = line.strip()
-                    if url and not url.startswith("#"):
-                        url_sources.add(url)
-                logger.info("Loaded knowledge base links file. path=%s count=%d", links_file, len(url_sources))
-            except Exception as e:
-                logger.warning("Failed to read knowledge base links file. path=%s error=%s", links_file, e)
-
-        for file_path in sources_dir.rglob("*"):
-            if file_path.is_file() and not file_path.name.startswith("."):
-                try:
-                    # Just verify it's readable text
-                    file_path.read_text(encoding="utf-8")
-                    file_sources.add(file_path)
-                except UnicodeDecodeError:
-                    logger.warning("Skipping non-UTF8 knowledge base file. path=%s", file_path)
-                    continue
-
-        logger.info("Knowledge base sources discovered. files=%d urls=%d", len(file_sources), len(url_sources))
-
-        # 2. Process sources and generate summaries
-        entries: list[str] = []
-
-        # Process files
-        sorted_files = sorted(file_sources)
-        total_files = len(sorted_files)
-        total_items = total_files + len(url_sources)
-        processed_count = 0
-
-        for i, file_path in enumerate(sorted_files, 1):
-            processed_count += 1
-            rel_path = file_path.relative_to(sources_dir).as_posix()
-            logger.info(
-                "Processing knowledge base source. current=%d total=%d type=file path=%s",
-                processed_count,
-                total_items,
-                rel_path,
-            )
-            try:
-                text = file_path.read_text(encoding="utf-8")
-
-                summary = await self.ai_client.summarize_for_kb_index(
-                    source_id=rel_path,
-                    text=text,
-                )
-                entries.append(f"{rel_path}\n{summary}")
-            except Exception as e:
-                logger.error("Failed to process knowledge base file source. path=%s error=%s", file_path, e)
-
-        # Process URLs
-        # Use WebFetcher context manager to keep browser open for batch processing
-        sorted_urls = sorted(url_sources)
-
-        async with WebFetcher(self.config) as fetcher:
-            for i, url in enumerate(sorted_urls, 1):
-                processed_count += 1
-                logger.info(
-                    "Processing knowledge base source. current=%d total=%d type=url url=%s",
-                    processed_count,
-                    total_items,
-                    url,
-                )
-                try:
-                    text = await fetcher.fetch(url)
-                    if not text:
-                        continue
-
-                    summary = await self.ai_client.summarize_for_kb_index(
-                        source_id=url,
-                        text=text,
-                    )
-                    entries.append(f"{url}\n{summary}")
-                except Exception as e:
-                    logger.error("Failed to process knowledge base URL source. url=%s error=%s", url, e)
-
-        # 3. Write index
-        index_path = Path(self.config.index_path)
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Join with blank lines
-        index_content = "\n\n".join(entries)
-        index_path.write_text(index_content, encoding="utf-8")
-        logger.info("Knowledge base index written. path=%s entries=%d", index_path, len(entries))
+    async def stop_runtime_refresh(self) -> None:
+        await self._cache_manager.stop_runtime_refresh()
 
     async def load_source_content(self, *, source_id: str) -> SourceContent:
         """Load full source content for a file path or URL identifier."""
