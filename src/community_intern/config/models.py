@@ -61,7 +61,7 @@ class KnowledgeBaseSettings(BaseModel):
     url_download_concurrency: int
     summarization_concurrency: int
 
-    url_refresh_min_interval_seconds: float
+    url_refresh_min_interval_hours: float
     runtime_refresh_tick_seconds: float
     file_watch_debounce_seconds: float
 

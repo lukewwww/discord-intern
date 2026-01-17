@@ -47,7 +47,7 @@ This mechanism reads these keys under the `kb` section:
 - `kb.index_cache_path`
 - `kb.url_download_concurrency`
 - `kb.summarization_concurrency`
-- `kb.url_refresh_min_interval_seconds`
+- `kb.url_refresh_min_interval_hours`
 - `kb.runtime_refresh_tick_seconds`
 
 ## End-to-end workflow
@@ -119,7 +119,7 @@ If the URL source is new (i.e., its `source_id` is not present in the loaded cac
 - The Knowledge Base MUST compute `content_hash`.
 - The Knowledge Base MUST immediately store the cache record with `summary_pending = true` and `summary_text = ""`. This ensures that if the process exits before or during summarization, the downloaded content is preserved and can be summarized later without re-fetching.
 - The summarization phase MUST attempt AI summarization to produce `summary_text`.
-- Each URL record MUST store `next_check_at` and the Knowledge Base MUST set `next_check_at = now + kb.url_refresh_min_interval_seconds`.
+- Each URL record MUST store `next_check_at` and the Knowledge Base MUST set `next_check_at = now + kb.url_refresh_min_interval_hours`.
 
 ### Existing URL source
 
@@ -137,7 +137,7 @@ If the server responds with HTTP 304:
 - The Knowledge Base MUST treat the URL as unchanged for this refresh.
 - The Knowledge Base MUST set `fetch_status = "not_modified"` and update `last_fetched_at`.
 - The Knowledge Base MUST NOT fetch URL content for this refresh.
-- The Knowledge Base MUST set `next_check_at = now + kb.url_refresh_min_interval_seconds`.
+- The Knowledge Base MUST set `next_check_at = now + kb.url_refresh_min_interval_hours`.
 - If `summary_pending` is true and cached content is available, the summarization phase MUST attempt summarization without issuing a network request.
 
 If the server responds with HTTP 200:
@@ -147,7 +147,7 @@ If the server responds with HTTP 200:
 - If the content is new or summarization is required, the Knowledge Base MUST set `summary_pending = true`.
   - Summarization is required when `content_hash` differs from the cached value, `summary_pending` is true, or `summary_text` is empty after trimming whitespace.
   - If content has changed, the Knowledge Base MUST immediately update the cache record with the new `content_hash`, `summary_pending = true`, and updated fetch metadata (`etag`, `last_modified`, `fetch_status = "success"`, `last_fetched_at`), and persist the cache. This ensures the new content is acknowledged even if summarization fails.
-- The Knowledge Base MUST update `etag` and `last_modified` when present, set `fetch_status = "success"`, update `last_fetched_at`, and set `next_check_at = now + kb.url_refresh_min_interval_seconds`.
+- The Knowledge Base MUST update `etag` and `last_modified` when present, set `fetch_status = "success"`, update `last_fetched_at`, and set `next_check_at = now + kb.url_refresh_min_interval_hours`.
 
 If an eligible URL check fails due to timeout, error, or unexpected HTTP status:
 

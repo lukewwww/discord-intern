@@ -152,10 +152,10 @@ kb:
   web_fetch_timeout_seconds: 30
   web_fetch_cache_dir: "data/knowledge-base/web-cache"
 
-  url_download_concurrency: 8
-  summarization_concurrency: 16
+  url_download_concurrency: 3
+  summarization_concurrency: 5
 
-  url_refresh_min_interval_seconds: 3600
+  url_refresh_min_interval_hours: 72
   runtime_refresh_tick_seconds: 300
   file_watch_debounce_seconds: 2
 
