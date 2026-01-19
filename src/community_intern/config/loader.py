@@ -48,6 +48,8 @@ def _ensure_default_data_layout(yaml_path: Path) -> None:
     (data_root / "config").mkdir(parents=True, exist_ok=True)
     (data_root / "knowledge-base" / "sources").mkdir(parents=True, exist_ok=True)
     (data_root / "knowledge-base" / "web-cache").mkdir(parents=True, exist_ok=True)
+    (data_root / "team-knowledge" / "raw").mkdir(parents=True, exist_ok=True)
+    (data_root / "team-knowledge" / "topics").mkdir(parents=True, exist_ok=True)
     (data_root / "logs").mkdir(parents=True, exist_ok=True)
 
 

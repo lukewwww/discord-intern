@@ -15,6 +15,8 @@ class QAPair:
     id: str
     timestamp: str
     turns: list[Turn]
+    conversation_id: str = ""
+    message_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

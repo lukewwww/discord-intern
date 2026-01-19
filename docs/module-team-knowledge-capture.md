@@ -32,6 +32,10 @@ The system captures complete Q&A exchanges from Discord:
 - Handle multi-turn conversations: user question → team answer → user follow-up → team follow-up answer are captured as a single Q&A pair
 - Preserve original message content without summarization
 
+**Thread handling**: When a team member posts in a thread, the entire thread history is captured as a single Q&A pair. If messages within the thread have reply references to other messages, those referenced messages are also included.
+
+**Conversation-level deduplication**: Each capture includes a `conversation_id` (thread ID or reply chain root message ID) and `message_ids` list. During regeneration, the system keeps only the most complete version of each conversation (the one with the most message IDs), avoiding duplicate processing of incremental captures.
+
 ### F4: Knowledge Organization and Maintenance
 
 The captured knowledge is organized for efficient use:
@@ -139,14 +143,25 @@ This handler transforms the gathered context into Q&A pairs:
 
 | Aspect | Behavior |
 |--------|----------|
-| Question extraction | From `reply_chain`: all consecutive user messages that form the original question, even if split across multiple sends |
+| Thread extraction | From `thread_history`: all messages in the thread, grouped by author into alternating Q/A turns |
+| Reply chain extraction | From `reply_chain`: all consecutive user messages that form the original question |
 | Answer extraction | The team member's `batch` messages |
 | Multi-turn handling | When user asks → team answers → user follows up → team answers again, all messages form a single Q&A pair with alternating Q/A sections |
 
-**Example**: User sends 3 messages as a question, team answers with 2 messages:
+**Extraction priority**:
+1. If `thread_history` is available (message is in a thread), use thread history to extract the full conversation
+2. Otherwise, use `reply_chain` for direct reply scenarios
+3. Always append the team member's `batch` messages as the final answer
+
+**Example 1 - Thread**: Team member posts in a thread with 5 messages:
+- `thread_history` contains all 5 messages (user and team interleaved)
+- `batch` contains the team member's current message(s)
+- Result: Q&A pair with full thread conversation, `conversation_id` = thread ID
+
+**Example 2 - Direct reply**: User sends 3 messages as a question, team replies:
 - `reply_chain` contains the 3-message group (the question)
-- `batch` contains the 2-message group (the answer)
-- Result: Q&A pair with complete question and complete answer
+- `batch` contains the team member's reply
+- Result: Q&A pair with complete question and answer, `conversation_id` = root message ID
 
 ### Handler Implementation
 
@@ -191,16 +206,24 @@ data/team-knowledge/
 ```
 --- QA ---
 timestamp: 2026-01-15T14:32:00Z
+conversation_id: thread_1458745245675032709
+message_ids: msg_123, msg_124, msg_125
 Q: How do I start a Crynux node?
 A: You can start a node by running the Docker container with the following command...
 
 --- QA ---
 timestamp: 2026-01-16T09:15:00Z
+conversation_id: thread_1458745245675032710
+message_ids: msg_200, msg_201, msg_202, msg_203
 Q: My node shows GPU not detected, what should I do?
 Q: I'm using an RTX 3080
 A: First, make sure your NVIDIA drivers are up to date.
 A: Then check if Docker has GPU access by running nvidia-smi inside the container.
 ```
+
+Raw file metadata fields:
+- `conversation_id`: Thread ID (prefixed with `thread_`) or root message ID (prefixed with `reply_`) for deduplication
+- `message_ids`: Comma-separated list of Discord message IDs included in this capture
 
 **Topic files (Tier 2)** use JSON format for easy QA pair identification and manipulation:
 
@@ -326,11 +349,12 @@ New Q&A is redundant (information already covered):
 
 During regeneration:
 1. Load all Q&A pairs from raw files
-2. Sort by timestamp (oldest first)
-3. Process each pair sequentially through classification and integration
-4. Later pairs can supersede earlier pairs on the same topic
+2. **Deduplicate by conversation**: Group pairs by `conversation_id`, keep only the entry with the most `message_ids` (the most complete version)
+3. Sort deduplicated pairs by timestamp (oldest first)
+4. Process each pair sequentially through classification and integration
+5. Later pairs can supersede earlier pairs on the same topic
 
-This ensures the final state matches what incremental processing would have produced.
+The deduplication step ensures that incremental captures of the same conversation (e.g., Q1-A1, then Q1-A1-Q2-A2) are collapsed to the final complete version, avoiding redundant LLM processing.
 
 ---
 

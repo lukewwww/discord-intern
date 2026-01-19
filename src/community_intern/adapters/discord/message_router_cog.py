@@ -82,6 +82,10 @@ class MessageRouterCog(commands.Cog):
 
         self._action_router = self._build_action_router(bot_user_id)
 
+        if self._qa_capture_handler is not None:
+            if hasattr(self._qa_capture_handler, "set_classifier"):
+                self._qa_capture_handler.set_classifier(self._classifier)
+
     def _build_action_router(self, bot_user_id: int) -> ActionRouter:
         team_member_ids = frozenset(self._settings.team_member_ids)
 

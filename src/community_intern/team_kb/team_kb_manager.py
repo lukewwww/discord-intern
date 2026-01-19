@@ -70,12 +70,16 @@ class TeamKnowledgeManager:
         *,
         turns: list[Turn],
         timestamp: str,
+        conversation_id: str = "",
+        message_ids: list[str] | None = None,
     ) -> None:
         qa_id = self._generate_qa_id(timestamp)
         qa_pair = QAPair(
             id=qa_id,
             timestamp=timestamp,
             turns=turns,
+            conversation_id=conversation_id,
+            message_ids=message_ids or [],
         )
 
         async with self._lock:
@@ -84,9 +88,10 @@ class TeamKnowledgeManager:
             await self._classify_and_integrate(qa_pair)
 
             logger.info(
-                "Q&A pair captured and indexed. qa_id=%s turn_count=%d",
+                "Q&A pair captured and indexed. qa_id=%s turn_count=%d conversation_id=%s",
                 qa_id,
                 len(turns),
+                conversation_id,
             )
 
     def _generate_qa_id(self, timestamp: str) -> str:
