@@ -2,6 +2,8 @@
 
 Community Intern is an AI and LLM powered Discord FAQ assistant that monitors selected channels, detects questions, and drafts source grounded answers using a managed knowledge base built from local files and online links.
 
+It also learns from your team by automatically capturing Q&A conversations when team members reply to community questions, growing the knowledge base over time.
+
 ## What it does
 
 - Watches all readable Discord channels for question-like messages
@@ -10,7 +12,7 @@ Community Intern is an AI and LLM powered Discord FAQ assistant that monitors se
 - Uses an LLM to draft an answer grounded only in the selected source content
 - Creates a thread from the triggering message and replies inside that thread
 - Supports follow up questions by replying again when a thread continues, using the full thread context
-- Captures Q&A exchanges from team member replies and automatically grows the knowledge base over time
+- Captures Q&A conversations from team member replies and automatically grows the knowledge base over time
 
 ## Key features
 
@@ -31,7 +33,7 @@ Key capabilities:
 
 - **Automatic capture**: When a team member replies to a user question (via Discord reply or thread), the complete Q&A exchange is captured without any manual tagging or commands.
 - **Multi-message handling**: Supports natural conversation flow where users ask questions across multiple messages and team members respond with detailed multi-message answers. Consecutive messages from the same author are automatically grouped.
-- **Multi-turn conversations**: Captures complete exchanges including follow-up questions and answers as a single coherent Q&A pair.
+- **Multi-turn conversations**: Captures complete conversations including follow-up questions and answers as a single coherent Q&A pair.
 - **LLM-organized topic library**: Captured knowledge is automatically classified into topic-indexed documents using an LLM. New Q&A pairs are intelligently integrated with existing knowledge, and outdated information is automatically superseded when newer answers replace old ones.
 - **Two-tier storage**: A raw archive preserves all original captures for audit and regeneration, while the topic-indexed library provides efficient retrieval for answering questions.
 - **Knowledge base integration**: Team knowledge is seamlessly combined with static documentation when answering questions, with team knowledge taking precedence for real-world, community-tested answers.
