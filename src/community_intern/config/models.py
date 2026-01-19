@@ -45,6 +45,7 @@ class DiscordSettings(BaseModel):
 
     token: str
     message_batch_wait_seconds: float
+    team_member_ids: Sequence[str] = ()
 
 
 class KnowledgeBaseSettings(BaseModel):
@@ -69,6 +70,20 @@ class KnowledgeBaseSettings(BaseModel):
     max_snippet_chars: int
     max_snippets_per_query: int
     max_sources_per_query: int
+
+    # KB source summarization prompt
+    summarization_prompt: str
+
+    # Team knowledge paths
+    team_raw_dir: str = "data/team-knowledge/raw"
+    team_topics_dir: str = "data/team-knowledge/topics"
+    team_index_path: str = "data/team-knowledge/index-team.txt"
+    team_index_cache_path: str = "data/team-knowledge/index-team-cache.json"
+
+    # Team knowledge prompts
+    team_classification_prompt: str
+    team_integration_prompt: str
+    team_summarization_prompt: str
 
 
 class AppConfig(BaseModel):

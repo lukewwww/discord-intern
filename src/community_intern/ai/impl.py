@@ -1,9 +1,11 @@
 import logging
 import asyncio
-from typing import Optional
+from typing import Optional, Type, TypeVar
 
-import aiohttp
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import Runnable
+from langchain_crynux import ChatCrynux
+from pydantic import BaseModel
 
 from community_intern.ai.interfaces import AIClient, AIConfig
 from community_intern.core.models import AIResult, Conversation, RequestContext
@@ -11,6 +13,9 @@ from community_intern.kb.interfaces import KnowledgeBase
 from community_intern.ai.graph import build_ai_graph, GraphState
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T", bound=BaseModel)
+
 
 def _append_selected_links(reply_text: str, *, selected_source_ids: list[str]) -> str:
     links = []
@@ -26,13 +31,30 @@ def _append_selected_links(reply_text: str, *, selected_source_ids: list[str]) -
         lines.append(f"- {link}")
     return "\n".join(lines).strip()
 
+
 class AIClientImpl(AIClient):
     def __init__(self, config: AIConfig, kb: Optional[KnowledgeBase] = None):
         self._config = config
         self._kb = kb
 
-        # Build and compile the graph once at startup
+        # Build and compile the graph for generate_reply
         self._app: Runnable = build_ai_graph(config)
+
+        # Shared LLM instance for simple single-step calls
+        self._llm = ChatCrynux(
+            base_url=config.llm_base_url,
+            api_key=config.llm_api_key,
+            model=config.llm_model,
+            vram_limit=config.vram_limit,
+            temperature=0.0,
+            request_timeout=config.llm_timeout_seconds,
+            max_retries=config.max_retries,
+        )
+
+    @property
+    def project_introduction(self) -> str:
+        """Return the project introduction prompt from configuration."""
+        return self._config.project_introduction
 
     def set_kb(self, kb: KnowledgeBase) -> None:
         """
@@ -61,7 +83,6 @@ class AIClientImpl(AIClient):
         }
 
         try:
-            # Reusing the compiled self._app is thread-safe and supports concurrency
             final_state = await asyncio.wait_for(
                 self._app.ainvoke(initial_state),
                 timeout=self._config.graph_timeout_seconds
@@ -88,104 +109,43 @@ class AIClientImpl(AIClient):
             logger.exception("AI reply generation failed.")
             return AIResult(should_reply=False, reply_text=None)
 
-    async def summarize_for_kb_index(
+    async def invoke_llm(
         self,
         *,
-        source_id: str,
-        text: str,
-    ) -> str:
+        system_prompt: str,
+        user_content: str,
+        response_model: Optional[Type[T]] = None,
+    ) -> str | T:
         """
-        Summarize text for the Knowledge Base index using the LLM.
+        Invoke the LLM with the given prompts.
 
-        This is implemented as a direct LLM call rather than a graph
-        because it is a single-step transformation without complex control flow.
+        Callers are responsible for appending project_introduction to the system prompt
+        if needed. Use ai_client.project_introduction to get the configured value.
+
+        Args:
+            system_prompt: The system prompt to send to the LLM
+            user_content: The user message content
+            response_model: Optional Pydantic model for structured output
+
+        Returns:
+            If response_model is None: plain text response (str)
+            If response_model is provided: validated instance of the model
         """
-        if not text.strip():
-            return ""
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_content),
+        ]
 
-        url = f"{self._config.llm_base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self._config.llm_api_key}",
-            "Content-Type": "application/json",
-        }
-
-        messages = []
-        if self._config.project_introduction.strip():
-            messages.append(
-                {
-                    "role": "system",
-                    "content": f"Project introduction:\n{self._config.project_introduction.strip()}",
-                }
+        if response_model is not None:
+            structured_llm = self._llm.with_structured_output(response_model)
+            result = await asyncio.wait_for(
+                structured_llm.ainvoke(messages),
+                timeout=self._config.llm_timeout_seconds,
             )
-        if self._config.summarization_prompt:
-            messages.append({"role": "system", "content": self._config.summarization_prompt})
-        messages.append({"role": "user", "content": text})
-
-        payload = {
-            "model": self._config.llm_model,
-            "messages": messages,
-            "temperature": 0.0,
-        }
-
-        async def _make_request():
-            last_error = None
-            for attempt in range(self._config.max_retries + 1):
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            url,
-                            headers=headers,
-                            json=payload,
-                            timeout=self._config.llm_timeout_seconds
-                        ) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                content = data["choices"][0]["message"]["content"]
-                                return content.strip()
-
-                            response_text = await resp.text()
-                            # Retry on rate limits (429) or server errors (5xx)
-                            if resp.status == 429 or 500 <= resp.status < 600:
-                                logger.warning(
-                                    "LLM summarization request failed and will be retried. source_id=%s status=%s attempt=%s",
-                                    source_id,
-                                    resp.status,
-                                    attempt + 1,
-                                )
-                                last_error = RuntimeError(f"HTTP {resp.status}: {response_text}")
-                            else:
-                                # Do not retry on other client errors (400, 401, 403, etc.)
-                                logger.error(
-                                    "LLM summarization request failed with a non-retryable status. source_id=%s status=%s",
-                                    source_id,
-                                    resp.status,
-                                )
-                                raise RuntimeError(f"HTTP {resp.status}: {response_text}")
-
-                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                    logger.warning(
-                        "LLM summarization request encountered a network error and will be retried. source_id=%s error=%s attempt=%s",
-                        source_id,
-                        str(e),
-                        attempt + 1,
-                    )
-                    last_error = e
-
-                # Exponential backoff if we are going to retry
-                if attempt < self._config.max_retries:
-                    await asyncio.sleep(0.5 * (2 ** attempt))
-
-            if last_error:
-                raise last_error
-            raise RuntimeError("Max retries exceeded")
-
-        try:
-            logger.info("Starting LLM summarization for source_id=%s", source_id)
-            start_time = asyncio.get_running_loop().time()
-            result = await _make_request()
-            duration = asyncio.get_running_loop().time() - start_time
-            logger.info("LLM summarization completed. source_id=%s duration=%.2fs", source_id, duration)
             return result
-        except Exception:
-            logger.exception("Failed to summarize source for knowledge base index. source_id=%s", source_id)
-            raise
+        else:
+            response = await asyncio.wait_for(
+                self._llm.ainvoke(messages),
+                timeout=self._config.llm_timeout_seconds,
+            )
+            return response.content.strip()

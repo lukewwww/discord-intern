@@ -10,6 +10,7 @@ from community_intern.config.models import KnowledgeBaseSettings
 from community_intern.kb.interfaces import IndexEntry, SourceContent
 from community_intern.kb.cache_manager import KnowledgeBaseCacheManager
 from community_intern.kb.web_fetcher import WebFetcher
+from community_intern.team_kb.topic_storage import TopicStorage
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class FileSystemKnowledgeBase:
         self.ai_client = ai_client
         self._index_lock = asyncio.Lock()
         self._cache_manager = KnowledgeBaseCacheManager(config=config, ai_client=ai_client, lock=self._index_lock)
+        self._topic_storage = TopicStorage(config.team_topics_dir, config.team_index_path)
 
     def _normalize_file_source_id(self, *, source_id: str, sources_dir: Path) -> str:
         """
@@ -36,28 +38,52 @@ class FileSystemKnowledgeBase:
         return normalized
 
     async def load_index_text(self) -> str:
-        """Load the startup-produced index artifact as plain text."""
+        """Load the startup-produced index artifact as plain text.
+
+        Combines main index and team index if both exist.
+        """
         index_path = Path(self.config.index_path)
-        if not index_path.exists():
-            return ""
-        return index_path.read_text(encoding="utf-8")
+        team_index_path = Path(self.config.team_index_path)
+
+        parts = []
+
+        if index_path.exists():
+            main_text = index_path.read_text(encoding="utf-8").strip()
+            if main_text:
+                parts.append(main_text)
+
+        if team_index_path.exists():
+            team_text = team_index_path.read_text(encoding="utf-8").strip()
+            if team_text:
+                parts.append(team_text)
+
+        return "\n\n".join(parts)
 
     async def load_index_entries(self) -> Sequence[IndexEntry]:
-        """Load the startup-produced index artifact as structured entries."""
-        text = await self.load_index_text()
-        entries = []
-        if not text:
-            return entries
+        """Load the startup-produced index artifact as structured entries.
 
-        # Split by double newlines to separate entries
-        chunks = text.strip().split("\n\n")
-        for chunk in chunks:
-            lines = chunk.strip().split("\n")
-            if not lines:
+        Loads entries from both main index and team index.
+        """
+        entries = []
+
+        for index_path_str in [self.config.index_path, self.config.team_index_path]:
+            index_path = Path(index_path_str)
+            if not index_path.exists():
                 continue
-            source_id = lines[0].strip()
-            description = "\n".join(lines[1:]).strip()
-            entries.append(IndexEntry(source_id=source_id, description=description))
+
+            text = index_path.read_text(encoding="utf-8")
+            if not text.strip():
+                continue
+
+            chunks = text.strip().split("\n\n")
+            for chunk in chunks:
+                lines = chunk.strip().split("\n")
+                if not lines:
+                    continue
+                source_id = lines[0].strip()
+                description = "\n".join(lines[1:]).strip()
+                entries.append(IndexEntry(source_id=source_id, description=description))
+
         return entries
 
     async def build_index(self) -> None:
@@ -75,16 +101,23 @@ class FileSystemKnowledgeBase:
     async def load_source_content(self, *, source_id: str) -> SourceContent:
         """Load full source content for a file path or URL identifier."""
         sources_dir = Path(self.config.sources_dir)
+        team_topics_dir = Path(self.config.team_topics_dir)
 
         # Check if it's a URL
         if source_id.startswith(("http://", "https://")):
-             # Reuse WebFetcher logic (it handles caching)
-             # Note: For single fetch, this will start/stop browser if not cached, which is heavy but safe.
-             async with WebFetcher(self.config) as fetcher:
-                 text = await fetcher.fetch(source_id)
-                 if not text.strip():
-                     raise RuntimeError(f"Failed to load URL source content: {source_id}")
-                 return SourceContent(source_id=source_id, text=text)
+            async with WebFetcher(self.config) as fetcher:
+                text = await fetcher.fetch(source_id)
+                if not text.strip():
+                    raise RuntimeError(f"Failed to load URL source content: {source_id}")
+                return SourceContent(source_id=source_id, text=text)
+
+        # Check if it's a team topic file
+        if source_id.endswith(".json"):
+            team_topic_path = team_topics_dir / source_id
+            if team_topic_path.exists() and team_topic_path.is_file():
+                text = self._topic_storage.load_topic_as_text(source_id)
+                if text.strip():
+                    return SourceContent(source_id=source_id, text=text)
 
         try:
             raw_path = Path(source_id.strip())
@@ -120,3 +153,4 @@ class FileSystemKnowledgeBase:
         except OSError as e:
             logger.warning("OS error while reading KB file source. source_id=%s error=%s", source_id, e)
             raise
+

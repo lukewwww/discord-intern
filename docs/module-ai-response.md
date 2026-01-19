@@ -2,39 +2,49 @@
 
 ## Purpose
 
-The AI Response module is responsible for all LLM-based operations in the bot. Its primary purpose is to generate safe answers to user questions using a Knowledge Base. It also provides auxiliary services like text summarization to support Knowledge Base indexing.
+The AI Response module is responsible for all LLM-based operations in the bot. Its primary purpose is to generate safe answers to user questions using a Knowledge Base. It also provides simple LLM call interfaces for other modules that need single-step LLM operations.
 
 ## Responsibilities
 
 - **Answer Generation**: Orchestrate a multi-step workflow to decide if a question is answerable, select sources, load content, generate an answer, and verify it.
-- **Text Summarization**: Generate concise summaries of source documents for the Knowledge Base index.
+- **Simple LLM Calls**: Provide a reusable `invoke_llm` interface for single-step LLM operations.
 - **Safety & Verification**: Ensure answers are grounded in provided sources and safe to post.
-- **Resource Management**: Efficiently manage LLM API calls and graph execution state.
+- **Resource Management**: Efficiently manage LLM API calls and share a single LLM client instance.
 
 ## Public Interfaces
 
-The `AIClient` exposes two distinct interfaces, each with a different implementation strategy tailored to its complexity.
+The `AIClient` provides interfaces for both complex multi-step workflows and simple single-step LLM operations.
 
-### 1. Generate Reply (`generate_reply`)
+### 1. Project Introduction Property (`project_introduction`)
 
-This is the main entry point for the bot's conversational capabilities.
+A read-only property that returns the configured `project_introduction` prompt string.
+
+- **Output**: `str`
+- **Usage**: Callers of `invoke_llm` should use this property to access the project introduction and append it to their system prompts as needed.
+
+### 2. Generate Reply (`generate_reply`)
+
+The main entry point for the bot's conversational capabilities.
 
 - **Input**: `Conversation`, `RequestContext`
 - **Output**: `AIResult` (contains `should_reply`, `reply_text`)
-- **Implementation**: **Graph-based Orchestration**.
-  - Uses a `LangGraph` workflow to handle the complex logic of gating, retrieval, generation, and verification.
-  - **Stateless**: The workflow is request-scoped and does not persist conversation history.
-  - Supports retries, conditional branching, and structured outputs at each step.
+- **Implementation**: **Graph-based Orchestration** using LangGraph.
 
-### 2. Summarize for Index (`summarize_for_kb_index`)
+### 3. Invoke LLM (`invoke_llm`)
 
-This is a utility method used by the Knowledge Base module when building its index.
+A generic interface for single-step LLM operations that other modules can use.
 
-- **Input**: `source_id`, `text`
-- **Output**: `str` (summary)
-- **Implementation**: **Direct LLM Call**.
-  - Uses a raw, stateless HTTP call to the LLM provider.
-  - Avoids the overhead of the graph for a simple, single-step transformation task.
+- **Input**: `system_prompt`, `user_content`, optional `response_model` (Pydantic model)
+- **Output**: Plain text `str` or validated Pydantic model instance
+- **Behavior**:
+  - Passes the system prompt directly to the LLM without modification
+  - If `response_model` is provided, uses `with_structured_output` for automatic JSON schema and validation
+  - Uses shared `ChatCrynux` instance with configured timeouts and retries
+
+Callers are responsible for appending `project_introduction` to their system prompts if needed. The `AIClient.project_introduction` property provides access to the configured value.
+
+This interface enables other modules to perform LLM operations while sharing the same configuration (endpoint, model, timeouts, retries).
+
 
 ## Implementation Architecture
 
@@ -122,29 +132,29 @@ The Graph structure is the high-level container for the workflow logic.
 - **Output**: `verification` (boolean).
 - **Behavior**: Acts as a "supervisor" to reject low-quality or unsafe answers. This step is skipped unless verification is enabled in configuration.
 
-## Link inclusion
+### Direct LLM Calls
+
+The `invoke_llm` interface bypasses the LangGraph workflow and uses a shared `ChatCrynux` instance directly. This avoids graph state management overhead for straightforward single-step tasks.
+
+**Shared LLM Instance**:
+- A single `ChatCrynux` instance is created at `AIClient` initialization
+- Configured with the same LLM settings as the graph (endpoint, model, timeouts, retries)
+- Reused across all `invoke_llm` calls
+
+**Output modes**:
+- **Plain text**: When `response_model` is `None`, returns `str` content
+- **Structured**: When `response_model` is a Pydantic model, uses `with_structured_output` for automatic JSON schema generation and validation
+
+## Link Inclusion
 
 When the selected sources include URL identifiers, the final reply text includes a short "Links" section with those URLs. This makes it easier for users to jump directly to the primary references without requiring citation formatting in the answer text.
 
-### Direct LLM Interaction (For `summarize_for_kb_index`)
-
-The summarization task is implemented differently for efficiency.
-
-- **Direct HTTP**: Uses `aiohttp` to call the LLM API directly.
-- **No Graph Overhead**: Bypasses LangGraph state management.
-- **Simple Prompting**: Uses a single prompt to compress text into a summary.
-
 ## LLM Integration
 
-The module interacts with the LLM in two ways, depending on the complexity of the task:
+The module uses `langchain-crynux` (`ChatCrynux`, ChatOpenAI-compatible) for all LLM interactions:
 
-1.  **Via LangChain (used in `generate_reply`)**:
-    - **Context**: Used within the **LangGraph workflow** for complex, multi-step orchestration (Gating, Selection, Generation, Verification).
-    - **Mechanism**: Uses `langchain-crynux` (`ChatCrynux`, ChatOpenAI-compatible) as the standard client. A single `ChatCrynux` instance is created at startup and injected into the graph nodes.
-
-2.  **Via Direct HTTP (used in `summarize_for_kb_index`)**:
-    - **Context**: Used by the **Knowledge Base indexer** for simple, single-shot text processing.
-    - **Mechanism**: Uses `aiohttp` for raw, lightweight HTTP POST requests, bypassing LangChain to reduce overhead.
+- **Graph workflow**: A `ChatCrynux` instance is created at graph build time and injected into graph nodes
+- **Simple calls**: A shared `ChatCrynux` instance is created at `AIClient` initialization and reused for all direct LLM calls
 
 ## Shared Data Models
 
@@ -171,10 +181,6 @@ The AI module is configured under the `ai` section in `config.yaml`.
 - **Prompts**: `gating_prompt`, `selection_prompt`, `answer_prompt`, `verification_prompt`.
 - **Limits**: `max_sources`, `max_answer_chars`.
 
-### Direct Call Keys (`summarize_for_kb_index`)
-- **Prompts**: `summarization_prompt`.
-- **Behavior**: Uses shared `llm_timeout_seconds` and `max_retries` for the HTTP request.
-
 ## Error Handling
 
 - **Timeouts**: Strict timeouts apply to the overall request and individual LLM calls.
@@ -185,7 +191,8 @@ The AI module is configured under the `ai` section in `config.yaml`.
 
 The configuration provides task-focused prompt content only. The runtime assembles the final system prompts by appending shared and fixed requirements in code:
 
-- `project_introduction` is appended to the system prompt for gating, source selection, answer generation, verification, and summarization.
+- For the graph workflow (`generate_reply`): `project_introduction` is appended to the system prompt for gating, source selection, answer generation, and verification.
+- For simple LLM calls (`invoke_llm`): Callers are responsible for appending `project_introduction` to their prompts using `ai_client.project_introduction`.
 - Output format requirements for gating, selection, and verification are enforced in code and are not configurable.
 
 ## Observability

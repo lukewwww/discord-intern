@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional, Type, TypeVar
+
+from pydantic import BaseModel
 
 from community_intern.core.models import AIResult, Conversation, RequestContext
+
+T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +23,11 @@ class MockAIClient:
         "This is a fixed reply used to test the Discord adapter end-to-end."
     )
 
+    @property
+    def project_introduction(self) -> str:
+        """Return empty project introduction for testing."""
+        return ""
+
     async def generate_reply(self, conversation: Conversation, context: RequestContext) -> AIResult:
         return AIResult(
             should_reply=True,
@@ -29,11 +39,14 @@ class MockAIClient:
             },
         )
 
-    async def summarize_for_kb_index(
+    async def invoke_llm(
         self,
         *,
-        source_id: str,
-        text: str,
-    ) -> str:
-        """Return a short plain-text description for the Knowledge Base index."""
-        return f"Mock summary for {source_id}: {text[:50]}..."
+        system_prompt: str,
+        user_content: str,
+        response_model: Optional[Type[T]] = None,
+    ) -> str | T:
+        """Mock LLM invocation that returns dummy responses."""
+        if response_model is not None:
+            return response_model.model_construct()
+        return "Mock LLM response"

@@ -19,7 +19,7 @@ def parse_rfc3339(value: str) -> datetime:
     return datetime.fromisoformat(raw)
 
 
-def _normalize_text(text: str) -> str:
+def normalize_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = [line.rstrip() for line in normalized.split("\n")]
     while lines and lines[0] == "":
@@ -30,5 +30,5 @@ def _normalize_text(text: str) -> str:
 
 
 def hash_text(text: str) -> str:
-    normalized = _normalize_text(text)
+    normalized = normalize_text(text)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()

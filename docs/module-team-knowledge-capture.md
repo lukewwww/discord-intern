@@ -71,11 +71,36 @@ When a new Q&A pair is captured:
 
 When adding a Q&A pair to a topic file, the LLM decides how to integrate it:
 - The system sends the existing topic file content and the new Q&A pair to an LLM
-- The LLM decides whether to:
-  - Simply append the new Q&A pair
-  - Replace an obsolete Q&A pair with the new one (when new information supersedes old)
-  - Remove outdated pairs that are no longer relevant
+- The LLM decides whether to add the new pair or skip it (if the information is already covered)
+- The LLM also identifies which existing pairs to remove (obsolete or superseded)
 - Only Tier 2 (topic files) is affected; Tier 1 (raw archive) is never modified
+
+### LLM Integration
+
+The Team Knowledge module uses the AI module's `invoke_llm` interface for LLM operations (see `module-ai-response.md`):
+
+- Calls `AIClient.invoke_llm` with a system prompt and Pydantic response model
+- Prompts are configured in the `kb` section of the config file
+- Uses `with_structured_output` for automatic JSON schema and validation
+- Appends `project_introduction` from AI config to all LLM calls
+
+LLM responses are kept minimal to reduce token usage and improve reliability:
+
+**Classification**:
+- Pydantic model: `ClassificationResult`
+- Returns: `topic_name` (str)
+- The topic identifier (e.g., "node-startup-issues")
+- The system determines if a topic is new by checking whether the file exists
+
+**Integration**:
+- Pydantic model: `IntegrationResult`
+- Returns: `skip` (bool), `remove_ids` (list of str, can be empty)
+- `skip`: if true, the new Q&A pair is not added (information already covered by existing pairs)
+- `remove_ids`: IDs of existing pairs to remove (obsolete or superseded)
+
+**Index Summarization**:
+- After each topic file update, the system generates an index description via the summarization prompt
+- This description is cached and written to `index-team.txt` for use in future classifications
 
 ### Regeneration
 
@@ -184,14 +209,20 @@ A: Then check if Docker has GPU access by running nvidia-smi inside the containe
   {
     "id": "qa_20260115_143200",
     "timestamp": "2026-01-15T14:32:00Z",
-    "question": ["How do I start a Crynux node?"],
-    "answer": ["You can start a node by running the Docker container..."]
+    "turns": [
+      {"role": "user", "content": "How do I start a Crynux node?"},
+      {"role": "team", "content": "You can start a node by running the Docker container..."}
+    ]
   },
   {
     "id": "qa_20260116_091500",
     "timestamp": "2026-01-16T09:15:00Z",
-    "question": ["My node shows GPU not detected, what should I do?", "I'm using an RTX 3080"],
-    "answer": ["First, make sure your NVIDIA drivers are up to date.", "Then check if Docker has GPU access..."]
+    "turns": [
+      {"role": "user", "content": "My node shows GPU not detected, what should I do?"},
+      {"role": "team", "content": "First, make sure your NVIDIA drivers are up to date."},
+      {"role": "user", "content": "I'm using an RTX 3080"},
+      {"role": "team", "content": "Then check if Docker has GPU access..."}
+    ]
   }
 ]
 ```
@@ -200,7 +231,7 @@ JSON format advantages:
 - Each QA pair has a unique ID for precise reference
 - LLM can specify which pairs to remove by ID
 - Easy to parse and validate
-- Clear structure for multi-turn conversations
+- `turns` array preserves the original order of multi-turn conversations
 
 ### Index File Format
 
@@ -241,9 +272,17 @@ The classification prompt receives:
 - The current `index.txt` content
 - The new Q&A pair to classify
 
-Expected output:
-- Existing topic file identifier to update, OR
-- Signal to create new topic with suggested filename and description
+Expected output (JSON):
+- `topic_name`: the topic identifier (e.g., "node-startup-issues")
+
+Example output:
+```json
+{
+  "topic_name": "node-startup-issues"
+}
+```
+
+The system checks if `{topic_name}.json` exists to determine whether this is a new topic.
 
 Fallback behavior: If uncertain, create a new topic file.
 
@@ -254,23 +293,34 @@ When updating an existing topic file, the integration prompt receives:
 - The new Q&A pair to add
 
 Expected output (JSON):
-- `add`: the new Q&A pair object to add (with generated ID)
-- `remove`: array of QA pair IDs to remove (obsolete pairs)
+- `skip`: boolean, true if the new Q&A should not be added
+- `remove_ids`: array of QA pair IDs to remove (can be empty)
 
-Example output:
+Example outputs:
+
+New Q&A supersedes an older one:
 ```json
 {
-  "add": {
-    "id": "qa_20260120_103000",
-    "timestamp": "2026-01-20T10:30:00Z",
-    "question": ["..."],
-    "answer": ["..."]
-  },
-  "remove": ["qa_20260115_143200"]
+  "skip": false,
+  "remove_ids": ["qa_20260115_143200"]
 }
 ```
 
-This structured output allows precise manipulation without regenerating the entire file.
+New Q&A adds new information:
+```json
+{
+  "skip": false,
+  "remove_ids": []
+}
+```
+
+New Q&A is redundant (information already covered):
+```json
+{
+  "skip": true,
+  "remove_ids": []
+}
+```
 
 ### Regeneration Processing
 
@@ -299,6 +349,19 @@ kb:
   team_topics_dir: "data/team-knowledge/topics"
   team_index_path: "data/team-knowledge/index-team.txt"
   team_index_cache_path: "data/team-knowledge/index-team-cache.json"
+
+  team_classification_prompt: |
+    You are a topic classifier for a team knowledge base.
+    Given the current index of topics and a new Q&A pair, decide whether to add it to an existing topic or create a new one.
+    ...
+
+  team_integration_prompt: |
+    You are integrating a new Q&A pair into an existing topic file.
+    ...
+
+  team_summarization_prompt: |
+    Write a compact index description of this Q&A topic file.
+    ...
 ```
 
 ---
@@ -424,6 +487,28 @@ The topic-indexed library integrates with the main Knowledge Base module (see `m
 - When generating answers, team knowledge takes precedence over static documentation
 - The KB module can load topic files from `topics/` just like other KB sources
 
+### Content Formatting for LLM
+
+When loading topic files for answer generation, the KB module formats the JSON into readable conversation text:
+
+```
+--- 2026-01-16T09:15:00Z ---
+User: My node shows GPU not detected, what should I do?
+Team: First, make sure your NVIDIA drivers are up to date.
+User: I'm using an RTX 3080
+Team: Then check if Docker has GPU access...
+
+--- 2026-01-17T10:30:00Z ---
+User: How do I start a Crynux node?
+Team: You can start a node by running the Docker container...
+```
+
+This format:
+- Preserves the multi-turn conversation order
+- Is easy for the LLM to understand
+- Removes JSON syntax overhead
+- Groups each Q&A exchange with its timestamp
+
 Module boundaries:
 - This module owns all files under `team-knowledge/`, `index-team.txt`, and `index-team-cache.json`
 - The KB module only reads these files, never writes them
@@ -434,7 +519,7 @@ Module boundaries:
 ## Dependencies
 
 - Discord adapter ([`module-bot-integration.md`](./module-bot-integration.md)): This module implements `QACaptureHandler`; the adapter provides message classification, context gathering, and routing
-- AI module: LLM calls for classification, integration, and index summarization
+- AI module ([`module-ai-response.md`](./module-ai-response.md)): Provides LLM calls for classification, integration, and index summarization via a shared `ChatCrynux` instance.
 - Shared cache modules:
   - `cache_utils`: Timestamp utilities.
   - `cache_io`: Cache I/O, index utilities.

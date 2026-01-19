@@ -11,6 +11,7 @@ logging:
 discord:
   token: "REPLACE_ME"
   message_batch_wait_seconds: 60
+  team_member_ids: []
 
 ai:
   llm_base_url: "https://bridge.crynux-as.xyz/v1/llm"
@@ -93,18 +94,6 @@ ai:
     Do not include any other text.
     Example: {"selected_source_ids": ["some_doc.txt", "https://some.link"]}
 
-  summarization_prompt: |
-    Write a compact index description of the source content.
-    Focus on coverage: list the main topics, concepts, systems, features, entities, and workflows mentioned.
-    Do not paraphrase or retell the document; do not quote it.
-    Keep it short, plain English, and oriented to when the source is relevant.
-
-    Output format requirements:
-    Do not output intermediate steps such as thoughts; only provide the final answer.
-    Do not add any preamble or markdown formatting.
-    Do not output the reasoning process.
-    Do not include any other text.
-
   answer_prompt: |
     You are a bot that acts as the community manager for the Crynux Network Discord server.
     Answer the user's question using only the provided context.
@@ -167,3 +156,45 @@ kb:
   max_snippet_chars: 1200
   max_snippets_per_query: 10
   max_sources_per_query: 6
+
+  summarization_prompt: |
+    Write a compact index description of the source content.
+    Focus on coverage: list the main topics, concepts, systems, features, entities, and workflows mentioned.
+    Do not paraphrase or retell the document; do not quote it.
+    Keep it short, plain English, and oriented to when the source is relevant.
+
+    Output format requirements:
+    Do not output intermediate steps such as thoughts; only provide the final answer.
+    Do not add any preamble or markdown formatting.
+    Do not output the reasoning process.
+    Do not include any other text.
+
+  team_raw_dir: "data/team-knowledge/raw"
+  team_topics_dir: "data/team-knowledge/topics"
+  team_index_path: "data/team-knowledge/index-team.txt"
+  team_index_cache_path: "data/team-knowledge/index-team-cache.json"
+
+  team_classification_prompt: |
+    You are a topic classifier for a team knowledge base.
+    Given the current index of topics and a new Q&A pair, decide whether to add it to an existing topic or create a new one.
+
+    Guidelines:
+    - Match Q&A pairs to topics based on the main subject matter.
+    - Create a new topic only if no existing topic covers the subject.
+    - Use descriptive filenames like "node-startup-issues.json" or "token-deposits.json".
+
+  team_integration_prompt: |
+    You are integrating a new Q&A pair into an existing topic file.
+    Analyze the existing Q&A pairs and the new one. Decide whether to:
+    - Simply add the new Q&A pair
+    - Remove obsolete Q&A pairs that the new one supersedes
+
+    Guidelines:
+    - Remove older pairs only if the new one provides updated or corrected information.
+    - Keep pairs that cover different aspects even if related.
+    - Preserve pairs with unique information not covered by the new one.
+
+  team_summarization_prompt: |
+    Write a compact index description of this Q&A topic file.
+    Focus on coverage: list the main questions and topics covered.
+    Keep it short, plain English, and oriented to when the source is relevant.

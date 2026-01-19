@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Optional
 
 import discord
 from discord.ext import commands
 
+from community_intern.adapters.discord.handlers import ActionHandler
 from community_intern.adapters.discord.interfaces import DiscordAdapter
 from community_intern.adapters.discord.message_router_cog import MessageRouterCog
 from community_intern.ai.interfaces import AIClient
@@ -23,7 +25,13 @@ def _build_intents() -> discord.Intents:
 
 
 class _InternBot(commands.Bot):
-    def __init__(self, *, config: AppConfig, ai_client: AIClient) -> None:
+    def __init__(
+        self,
+        *,
+        config: AppConfig,
+        ai_client: AIClient,
+        qa_capture_handler: Optional[ActionHandler] = None,
+    ) -> None:
         intents = _build_intents()
         super().__init__(command_prefix="!", intents=intents)
 
@@ -32,6 +40,7 @@ class _InternBot(commands.Bot):
             ai_client=ai_client,
             settings=config.discord,
             dry_run=config.app.dry_run,
+            qa_capture_handler=qa_capture_handler,
         )
 
     async def setup_hook(self) -> None:
@@ -47,11 +56,21 @@ class _InternBot(commands.Bot):
 
 
 class DiscordBotAdapter(DiscordAdapter):
-    def __init__(self, *, config: AppConfig, ai_client: AIClient) -> None:
+    def __init__(
+        self,
+        *,
+        config: AppConfig,
+        ai_client: AIClient,
+        qa_capture_handler: Optional[ActionHandler] = None,
+    ) -> None:
         self._config = config
         self._ai_client = ai_client
 
-        self._bot = _InternBot(config=self._config, ai_client=self._ai_client)
+        self._bot = _InternBot(
+            config=self._config,
+            ai_client=self._ai_client,
+            qa_capture_handler=qa_capture_handler,
+        )
 
     @property
     def ai_client(self) -> AIClient:

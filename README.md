@@ -80,20 +80,42 @@ Start from [`./examples/config.yaml`](./examples/config.yaml) and copy it to `da
 ai:
   llm_base_url: "https://bridge.crynux-as.xyz/v1/llm"
   llm_model: "Qwen/Qwen2.5-7B-Instruct"
+  vram_limit: 24  # Required for Crynux when using larger models: minimum GPU VRAM (GB) for inference
 ```
 
 **Prompt configuration**
 
-The AI module is configured under the `ai` section in `data/config/config.yaml`. The key prompt inputs are:
+Prompts are configured in two sections of `data/config/config.yaml`:
 
-- `project_introduction`: A shared domain introduction that is appended to multiple prompt steps. Keep it accurate, concise, and written as a stable project specification. This text strongly influences what the bot considers in scope and how it explains concepts.
+The `ai` section configures the Q&A workflow:
+
+- `project_introduction`: A shared domain introduction appended to multiple prompt steps. This text strongly influences what the bot considers in scope.
 - `gating_prompt`: Decides whether the bot should reply at all.
 - `selection_prompt`: Selects the most relevant sources from the knowledge base index.
 - `answer_prompt`: Generates the final answer using only the selected source content.
 - `verification_prompt`: Verifies the draft answer for clarity, safety, and grounding.
-- `summarization_prompt`: Summarizes source text for the knowledge base index.
 
-The runtime enforces output format requirements for gating, selection, and verification in code. Keep your prompts focused on task intent rather than JSON schemas. For full details, see [`./docs/module-ai-response.md`](./docs/module-ai-response.md).
+The `kb` section configures knowledge base indexing:
+
+- `summarization_prompt`: Summarizes source text for the knowledge base index.
+- `team_classification_prompt`: Classifies captured Q&A pairs into topics.
+- `team_integration_prompt`: Integrates new Q&A pairs into existing topic files, removing obsolete entries.
+- `team_summarization_prompt`: Summarizes topic files for the team knowledge index.
+
+**Team member configuration (optional)**
+
+To enable Team Knowledge Capture, add your team members' Discord user IDs to `config.yaml`:
+
+```yaml
+discord:
+  team_member_ids:
+    - "123456789012345678"
+    - "234567890123456789"
+```
+
+To get a Discord user ID, enable Developer Mode in Discord (User Settings → App Settings → Advanced → Developer Mode), then right-click on a user and select "Copy User ID".
+
+When configured, team member replies to community questions are automatically captured and added to the knowledge base. Team member messages do not trigger the AI reply workflow. See [`./docs/module-team-knowledge-capture.md`](./docs/module-team-knowledge-capture.md) for details.
 
 **b) Create `.env` for secrets**
 

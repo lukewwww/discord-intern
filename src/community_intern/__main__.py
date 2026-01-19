@@ -35,6 +35,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # Command: init_kb
     subparsers.add_parser("init_kb", help="Initialize Knowledge Base index")
 
+    # Command: init_team_kb
+    subparsers.add_parser("init_team_kb", help="Initialize team knowledge base")
+
     return parser
 
 
@@ -65,6 +68,8 @@ async def _load_config(args: argparse.Namespace):
 
 
 async def _run_bot(args: argparse.Namespace) -> None:
+    from community_intern.team_kb import QACaptureHandler, TeamKnowledgeManager
+
     config = await _load_config(args)
     init_logging(config.logging)
     logger.info("Starting application in bot mode. dry_run=%s", config.app.dry_run)
@@ -74,11 +79,19 @@ async def _run_bot(args: argparse.Namespace) -> None:
     kb = FileSystemKnowledgeBase(config=config.kb, ai_client=ai_client)
     ai_client.set_kb(kb)
 
+    # Initialize team knowledge capture
+    team_kb = TeamKnowledgeManager(config=config.kb, ai_client=ai_client)
+    qa_capture_handler = QACaptureHandler(manager=team_kb)
+
     index_task = asyncio.create_task(kb.build_index())
     index_task.add_done_callback(_log_index_task_result)
     kb.start_runtime_refresh()
 
-    adapter = DiscordBotAdapter(config=config, ai_client=ai_client)
+    adapter = DiscordBotAdapter(
+        config=config,
+        ai_client=ai_client,
+        qa_capture_handler=qa_capture_handler,
+    )
     try:
         if args.run_seconds is not None:
             await adapter.run_for(seconds=args.run_seconds)
@@ -102,12 +115,24 @@ async def _init_kb(args: argparse.Namespace) -> None:
 
     ai_client = AIClientImpl(config=config.ai)
     kb = FileSystemKnowledgeBase(config=config.kb, ai_client=ai_client)
-    # Note: ai_client.set_kb(kb) is not strictly needed for indexing,
-    # but good for consistency if AIClient needs to read KB during init in future.
     ai_client.set_kb(kb)
 
     await kb.build_index()
     logger.info("Knowledge base indexing completed.")
+
+
+async def _init_team_kb(args: argparse.Namespace) -> None:
+    from community_intern.team_kb import TeamKnowledgeManager
+
+    config = await _load_config(args)
+    init_logging(config.logging)
+    logger.info("Starting team knowledge base initialization.")
+
+    ai_client = AIClientImpl(config=config.ai)
+    team_kb = TeamKnowledgeManager(config=config.kb, ai_client=ai_client)
+
+    await team_kb.regenerate()
+    logger.info("Team knowledge base initialization completed.")
 
 
 async def _main_async() -> None:
@@ -118,6 +143,8 @@ async def _main_async() -> None:
         await _run_bot(args)
     elif args.command == "init_kb":
         await _init_kb(args)
+    elif args.command == "init_team_kb":
+        await _init_team_kb(args)
 
 
 def main() -> None:

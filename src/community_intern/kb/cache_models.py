@@ -24,9 +24,12 @@ class UrlMetadata:
     next_check_at: str
 
 
+SourceType = Literal["file", "url", "team_topic"]
+
+
 @dataclass(slots=True)
 class CacheRecord:
-    source_type: Literal["file", "url"]
+    source_type: SourceType
     content_hash: str
     summary_text: str
     last_indexed_at: str

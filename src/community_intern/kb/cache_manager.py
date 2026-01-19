@@ -26,6 +26,16 @@ from community_intern.kb.web_fetcher import WebFetcher
 logger = logging.getLogger(__name__)
 
 
+def _compose_system_prompt(base_prompt: str, project_introduction: str) -> str:
+    """Compose system prompt by appending project introduction if available."""
+    parts = []
+    if base_prompt.strip():
+        parts.append(base_prompt.strip())
+    if project_introduction.strip():
+        parts.append(f"Project introduction:\n{project_introduction.strip()}")
+    return "\n\n".join(parts).strip()
+
+
 
 class KnowledgeBaseCacheManager:
     def __init__(self, config: KnowledgeBaseSettings, ai_client: AIClient, lock: asyncio.Lock):
@@ -201,7 +211,14 @@ class KnowledgeBaseCacheManager:
     ) -> None:
         async with self._summary_semaphore:
             try:
-                summary = await self._ai_client.summarize_for_kb_index(source_id=source_id, text=text)
+                system_prompt = _compose_system_prompt(
+                    self._config.summarization_prompt,
+                    self._ai_client.project_introduction,
+                )
+                summary = await self._ai_client.invoke_llm(
+                    system_prompt=system_prompt,
+                    user_content=text,
+                )
             except Exception:
                 logger.exception("Failed to summarize knowledge base source. source_id=%s", source_id)
                 return

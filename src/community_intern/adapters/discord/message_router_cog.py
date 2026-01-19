@@ -2,121 +2,101 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Awaitable, Callable, Iterable, Optional, TypeVar
+from typing import Optional
 
-import aiohttp
 import discord
 from discord.ext import commands
 
+from community_intern.adapters.discord.action_router import ActionRouter
+from community_intern.adapters.discord.ai_response_handler import AIResponseHandler
+from community_intern.adapters.discord.classifier import MessageClassifier
+from community_intern.adapters.discord.context_gatherer import ContextGatherer
+from community_intern.adapters.discord.handlers import ActionHandler
+from community_intern.adapters.discord.models import GatheredContext
 from community_intern.ai.interfaces import AIClient
 from community_intern.config.models import DiscordSettings
-from community_intern.core.models import Conversation, Message, RequestContext
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
-
 
 @dataclass
-class _PendingUserBatch:
+class _PendingBatch:
     messages: list[discord.Message]
     task: asyncio.Task[None] | None
     generation: int
 
 
-def _to_utc_datetime(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-def _normalize_messages(messages: Iterable[discord.Message], *, bot_user_id: int) -> list[Message]:
-    out: list[Message] = []
-    for m in messages:
-        text = (m.content or "").strip()
-        if not text:
-            continue
-        role = "assistant" if m.author and m.author.id == bot_user_id else "user"
-        out.append(
-            Message(
-                role=role,
-                text=text,
-                timestamp=_to_utc_datetime(m.created_at),
-                author_id=str(m.author.id) if m.author is not None else None,
-            )
-        )
-    return out
-
-
-def _thread_name_from_message(text: str) -> str:
-    base = text.strip().replace("\n", " ")
-    if not base:
-        return "FAQ Answer"
-    base = base[:80]
-    return f"FAQ: {base}"
-
-
-_RETRYABLE_DISCORD_HTTP_ERRORS: tuple[type[BaseException], ...] = (
-    aiohttp.ClientConnectorError,
-    aiohttp.ClientOSError,
-    aiohttp.ServerDisconnectedError,
-    asyncio.TimeoutError,
-    ConnectionResetError,
-)
-
-
-async def _retry_async(
-    operation: str,
-    *,
-    attempts: int,
-    base_delay_seconds: float,
-    make_call: Callable[[], Awaitable[T]],
-    log_context: str,
-) -> T:
-    last_error: BaseException | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return await make_call()
-        except _RETRYABLE_DISCORD_HTTP_ERRORS as exc:
-            last_error = exc
-            if attempt >= attempts:
-                break
-            delay_seconds = base_delay_seconds * (2 ** (attempt - 1))
-            logger.warning(
-                "Retrying Discord HTTP request. operation=%s attempt=%s/%s delay_seconds=%s %s error=%s",
-                operation,
-                attempt,
-                attempts,
-                delay_seconds,
-                log_context,
-                type(exc).__name__,
-            )
-            await asyncio.sleep(delay_seconds)
-
-    assert last_error is not None
-    raise last_error
-
-
 class MessageRouterCog(commands.Cog):
     """
-    Routes Discord events to the AI module and posts replies in threads.
+    Routes Discord events through the 3-layer architecture:
+    1. Message Classification
+    2. Context Gathering
+    3. Action Routing
 
     This implements the behavior specified in docs/module-bot-integration.md.
     """
 
-    def __init__(self, *, bot: commands.Bot, ai_client: AIClient, settings: DiscordSettings, dry_run: bool) -> None:
+    def __init__(
+        self,
+        *,
+        bot: commands.Bot,
+        ai_client: AIClient,
+        settings: DiscordSettings,
+        dry_run: bool,
+        qa_capture_handler: Optional[ActionHandler] = None,
+    ) -> None:
         self._bot = bot
-        self._ai = ai_client
+        self._ai_client = ai_client
         self._settings = settings
         self._dry_run = dry_run
-        self._pending_user_batches: dict[tuple[str, str, str], _PendingUserBatch] = {}
+        self._qa_capture_handler = qa_capture_handler
+
+        self._classifier: Optional[MessageClassifier] = None
+        self._context_gatherer: Optional[ContextGatherer] = None
+        self._action_router: Optional[ActionRouter] = None
+
+        self._pending_batches: dict[tuple[str, str, str], _PendingBatch] = {}
 
     @property
     def ai_client(self) -> AIClient:
-        return self._ai
+        return self._ai_client
+
+    def set_qa_capture_handler(self, handler: ActionHandler) -> None:
+        self._qa_capture_handler = handler
+        if self._action_router is not None and self._bot.user is not None:
+            self._action_router = self._build_action_router(self._bot.user.id)
+
+    def _initialize_components(self, bot_user_id: int) -> None:
+        team_member_ids = frozenset(self._settings.team_member_ids)
+
+        self._classifier = MessageClassifier(
+            bot_user_id=bot_user_id,
+            team_member_ids=self._settings.team_member_ids,
+        )
+
+        self._context_gatherer = ContextGatherer(
+            classifier=self._classifier,
+            batch_wait_seconds=self._settings.message_batch_wait_seconds,
+        )
+
+        self._action_router = self._build_action_router(bot_user_id)
+
+    def _build_action_router(self, bot_user_id: int) -> ActionRouter:
+        team_member_ids = frozenset(self._settings.team_member_ids)
+
+        ai_handler = AIResponseHandler(
+            ai_client=self._ai_client,
+            bot_user_id=bot_user_id,
+            team_member_ids=team_member_ids,
+            dry_run=self._dry_run,
+        )
+
+        return ActionRouter(
+            ai_handler=ai_handler,
+            qa_capture_handler=self._qa_capture_handler,
+            bot_user_id=bot_user_id,
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -131,16 +111,17 @@ class MessageRouterCog(commands.Cog):
         if bot_user is None:
             logger.warning("Discord bot user is not available. message_id=%s", getattr(message, "id", None))
             return
-        bot_user_id = bot_user.id
 
-        if isinstance(message.channel, discord.Thread):
-            await self._handle_thread_message(message=message, thread=message.channel, bot_user_id=bot_user_id)
-        else:
-            await self._handle_channel_message(message=message)
+        if self._classifier is None:
+            self._initialize_components(bot_user.id)
 
-        await self._bot.process_commands(message)
+        assert self._classifier is not None
 
-    async def _handle_channel_message(self, *, message: discord.Message) -> None:
+        context = await self._classifier.classify(message)
+
+        if context.author_type == "bot":
+            return
+
         if message.guild is None:
             return
 
@@ -150,51 +131,16 @@ class MessageRouterCog(commands.Cog):
         if message.author is None:
             return
 
-        if message.reference is not None and message.reference.message_id is not None:
-            referenced_message = await self._resolve_referenced_message(message=message)
-            if referenced_message is None:
-                return
-            if referenced_message.author is not None and referenced_message.author.id != message.author.id:
-                return
-
         key = (str(message.guild.id), str(channel_id), str(message.author.id))
-        self._enqueue_user_batch(message=message, key=key)
-        return
+        self._enqueue_batch(message=message, key=key)
 
-    async def _resolve_referenced_message(self, *, message: discord.Message) -> Optional[discord.Message]:
-        reference = message.reference
-        if reference is None or reference.message_id is None:
-            return None
+        await self._bot.process_commands(message)
 
-        if isinstance(reference.resolved, discord.Message):
-            return reference.resolved
-
-        try:
-            return await message.channel.fetch_message(reference.message_id)
-        except discord.NotFound:
-            logger.warning(
-                "Referenced Discord message was not found. platform=discord guild_id=%s channel_id=%s message_id=%s reference_id=%s",
-                str(message.guild.id) if message.guild is not None else None,
-                str(getattr(message.channel, "id", None)),
-                str(message.id),
-                str(reference.message_id),
-            )
-            return None
-        except discord.DiscordException:
-            logger.exception(
-                "Failed to fetch referenced Discord message. platform=discord guild_id=%s channel_id=%s message_id=%s reference_id=%s",
-                str(message.guild.id) if message.guild is not None else None,
-                str(getattr(message.channel, "id", None)),
-                str(message.id),
-                str(reference.message_id),
-            )
-            return None
-
-    def _enqueue_user_batch(self, *, message: discord.Message, key: tuple[str, str, str]) -> None:
-        pending = self._pending_user_batches.get(key)
+    def _enqueue_batch(self, *, message: discord.Message, key: tuple[str, str, str]) -> None:
+        pending = self._pending_batches.get(key)
         if pending is None:
-            pending = _PendingUserBatch(messages=[], task=None, generation=0)
-            self._pending_user_batches[key] = pending
+            pending = _PendingBatch(messages=[], task=None, generation=0)
+            self._pending_batches[key] = pending
 
         prior_count = len(pending.messages)
         pending.messages.append(message)
@@ -204,9 +150,9 @@ class MessageRouterCog(commands.Cog):
         wait_action = "start" if prior_count == 0 else "reset"
         if pending.task is not None and not pending.task.done():
             pending.task.cancel()
-        pending.task = asyncio.create_task(self._flush_user_batch_after_wait(key=key, generation=generation))
+        pending.task = asyncio.create_task(self._flush_batch_after_wait(key=key, generation=generation))
         logger.debug(
-            "Waiting to batch Discord user messages. platform=discord guild_id=%s channel_id=%s author_id=%s message_id=%s batch_size=%s wait_seconds=%s action=%s generation=%s",
+            "Waiting to batch Discord messages. platform=discord guild_id=%s channel_id=%s author_id=%s message_id=%s batch_size=%s wait_seconds=%s action=%s generation=%s",
             key[0],
             key[1],
             key[2],
@@ -217,13 +163,13 @@ class MessageRouterCog(commands.Cog):
             generation,
         )
 
-    async def _flush_user_batch_after_wait(self, *, key: tuple[str, str, str], generation: int) -> None:
+    async def _flush_batch_after_wait(self, *, key: tuple[str, str, str], generation: int) -> None:
         try:
             await asyncio.sleep(self._settings.message_batch_wait_seconds)
         except asyncio.CancelledError:
             return
 
-        pending = self._pending_user_batches.get(key)
+        pending = self._pending_batches.get(key)
         if pending is None:
             return
         if pending.generation != generation:
@@ -231,11 +177,11 @@ class MessageRouterCog(commands.Cog):
 
         messages = pending.messages
         if not messages:
-            del self._pending_user_batches[key]
+            del self._pending_batches[key]
             return
 
         logger.debug(
-            "Starting processing of batched Discord user messages. platform=discord guild_id=%s channel_id=%s author_id=%s batch_size=%s last_message_id=%s generation=%s",
+            "Processing batched Discord messages. platform=discord guild_id=%s channel_id=%s author_id=%s batch_size=%s last_message_id=%s generation=%s",
             key[0],
             key[1],
             key[2],
@@ -243,243 +189,29 @@ class MessageRouterCog(commands.Cog):
             str(messages[-1].id),
             generation,
         )
-        del self._pending_user_batches[key]
+        del self._pending_batches[key]
+
         try:
-            await self._process_channel_batch(messages=messages)
+            await self._process_batch(messages=messages)
         except Exception:
             logger.exception("Failed to process batched Discord messages. guild_id=%s channel_id=%s author_id=%s", *key)
 
-    async def _process_channel_batch(self, *, messages: list[discord.Message]) -> None:
+    async def _process_batch(self, *, messages: list[discord.Message]) -> None:
         messages = [m for m in messages if (m.content or "").strip()]
         if not messages:
             return
 
         last_message = messages[-1]
-        if last_message.guild is None:
+
+        if self._classifier is None or self._context_gatherer is None or self._action_router is None:
+            logger.warning("Router components not initialized.")
             return
 
-        channel_id = getattr(last_message.channel, "id", None)
-        if channel_id is None:
-            return
+        context = await self._classifier.classify(last_message)
 
-        conversation_messages: list[Message] = []
-        for msg in messages:
-            text = (msg.content or "").strip()
-            if not text:
-                continue
-            conversation_messages.append(
-                Message(
-                    role="user",
-                    text=text,
-                    timestamp=_to_utc_datetime(msg.created_at),
-                    author_id=str(msg.author.id) if msg.author is not None else None,
-                )
-            )
-
-        if not conversation_messages:
-            return
-
-        conversation = Conversation(messages=tuple(conversation_messages))
-        context = RequestContext(
-            platform="discord",
-            guild_id=str(last_message.guild.id),
-            channel_id=str(channel_id),
-            thread_id=None,
-            message_id=str(last_message.id),
+        gathered_context = await self._context_gatherer.gather(
+            batch=messages,
+            message=last_message,
         )
 
-        started = time.perf_counter()
-        try:
-            result = await self._ai.generate_reply(conversation=conversation, context=context)
-        except Exception:
-            logger.exception(
-                "AI request failed. platform=discord guild_id=%s channel_id=%s message_id=%s",
-                context.guild_id,
-                context.channel_id,
-                context.message_id,
-            )
-            return
-        finally:
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            logger.info(
-                "AI request completed. platform=discord routing=channel_message guild_id=%s channel_id=%s message_id=%s latency_ms=%s",
-                context.guild_id,
-                context.channel_id,
-                context.message_id,
-                elapsed_ms,
-            )
-
-        if not result.should_reply or not result.reply_text:
-            return
-
-        if self._dry_run:
-            logger.info(
-                "Dry run enabled, skipping Discord reply. platform=discord guild_id=%s channel_id=%s message_id=%s",
-                context.guild_id,
-                context.channel_id,
-                context.message_id,
-            )
-            return
-
-        thread_name = _thread_name_from_message(last_message.content or "")
-        log_context = (
-            f"platform=discord guild_id={context.guild_id} channel_id={context.channel_id} message_id={context.message_id}"
-        )
-        try:
-            thread = await _retry_async(
-                "create_thread",
-                attempts=3,
-                base_delay_seconds=0.5,
-                make_call=lambda: last_message.create_thread(name=thread_name),
-                log_context=log_context,
-            )
-        except _RETRYABLE_DISCORD_HTTP_ERRORS:
-            logger.exception("Giving up on Discord thread creation after retries. %s", log_context)
-            return
-        except discord.DiscordException:
-            logger.exception(
-                "Failed to create Discord thread. platform=discord guild_id=%s channel_id=%s message_id=%s",
-                context.guild_id,
-                context.channel_id,
-                context.message_id,
-            )
-            return
-
-        try:
-            await _retry_async(
-                "post_message",
-                attempts=3,
-                base_delay_seconds=0.5,
-                make_call=lambda: thread.send(result.reply_text),
-                log_context=f"{log_context} thread_id={thread.id}",
-            )
-        except _RETRYABLE_DISCORD_HTTP_ERRORS:
-            logger.exception("Giving up on posting to Discord thread after retries. %s thread_id=%s", log_context, str(thread.id))
-            return
-        except discord.DiscordException:
-            logger.exception(
-                "Failed to post message to Discord thread. platform=discord guild_id=%s channel_id=%s thread_id=%s message_id=%s",
-                context.guild_id,
-                context.channel_id,
-                str(thread.id),
-                context.message_id,
-            )
-            return
-
-        logger.info(
-            "Posted reply to Discord thread. platform=discord routing=channel_message guild_id=%s channel_id=%s thread_id=%s message_id=%s",
-            context.guild_id,
-            context.channel_id,
-            str(thread.id),
-            context.message_id,
-        )
-
-    async def _handle_thread_message(self, *, message: discord.Message, thread: discord.Thread, bot_user_id: int) -> None:
-        if thread.owner_id is not None and thread.owner_id != bot_user_id:
-            return
-
-        history: list[discord.Message]
-        try:
-            history = [m async for m in thread.history(limit=None, oldest_first=True)]
-        except discord.DiscordException:
-            logger.exception(
-                "Failed to load Discord thread history. platform=discord guild_id=%s channel_id=%s thread_id=%s message_id=%s",
-                str(thread.guild.id) if thread.guild is not None else None,
-                str(thread.parent_id) if thread.parent_id is not None else str(thread.id),
-                str(thread.id),
-                str(message.id),
-            )
-            return
-
-        is_eligible = any(m.author is not None and m.author.id == bot_user_id for m in history)
-        if not is_eligible:
-            return
-
-        normalized = _normalize_messages(history, bot_user_id=bot_user_id)
-        if not normalized:
-            return
-
-        channel_id = str(thread.parent_id) if thread.parent_id is not None else str(thread.id)
-        context = RequestContext(
-            platform="discord",
-            guild_id=str(thread.guild.id) if thread.guild is not None else None,
-            channel_id=channel_id,
-            thread_id=str(thread.id),
-            message_id=str(message.id),
-        )
-
-        conversation = Conversation(messages=normalized)
-
-        started = time.perf_counter()
-        try:
-            result = await self._ai.generate_reply(conversation=conversation, context=context)
-        except Exception:
-            logger.exception(
-                "AI request failed. platform=discord guild_id=%s channel_id=%s thread_id=%s message_id=%s",
-                context.guild_id,
-                context.channel_id,
-                context.thread_id,
-                context.message_id,
-            )
-            return
-        finally:
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            logger.info(
-                "AI request completed. platform=discord routing=thread_update guild_id=%s channel_id=%s thread_id=%s message_id=%s latency_ms=%s",
-                context.guild_id,
-                context.channel_id,
-                context.thread_id,
-                context.message_id,
-                elapsed_ms,
-            )
-
-        if not result.should_reply or not result.reply_text:
-            return
-
-        if self._dry_run:
-            logger.info(
-                "Dry run enabled, skipping Discord reply. platform=discord guild_id=%s channel_id=%s thread_id=%s message_id=%s",
-                context.guild_id,
-                context.channel_id,
-                context.thread_id,
-                context.message_id,
-            )
-            return
-
-        try:
-            await _retry_async(
-                "post_message",
-                attempts=3,
-                base_delay_seconds=0.5,
-                make_call=lambda: thread.send(result.reply_text),
-                log_context=(
-                    f"platform=discord guild_id={context.guild_id} channel_id={context.channel_id} "
-                    f"thread_id={context.thread_id} message_id={context.message_id}"
-                ),
-            )
-        except _RETRYABLE_DISCORD_HTTP_ERRORS:
-            logger.exception(
-                "Giving up on posting to Discord thread after retries. platform=discord guild_id=%s channel_id=%s thread_id=%s message_id=%s",
-                context.guild_id,
-                context.channel_id,
-                context.thread_id,
-                context.message_id,
-            )
-            return
-        except discord.DiscordException:
-            logger.exception(
-                "Failed to post message to Discord thread. platform=discord guild_id=%s channel_id=%s thread_id=%s message_id=%s",
-                context.guild_id,
-                context.channel_id,
-                context.thread_id,
-                context.message_id,
-            )
-            return
-
-        logger.info(
-            "Posted reply to Discord thread. platform=discord routing=thread_update guild_id=%s channel_id=%s thread_id=%s message_id=%s",
-            context.guild_id,
-            context.channel_id,
-            context.thread_id,
-            context.message_id,
-        )
+        await self._action_router.route(last_message, context, gathered_context)
