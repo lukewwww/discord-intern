@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable, Sequence
 
-from community_intern.kb.cache_models import (
+from community_intern.knowledge_cache.models import (
     CacheRecord,
     CacheState,
     FileMetadata,
     SchemaVersion,
+    SourceType,
     UrlMetadata,
 )
-from community_intern.kb.cache_utils import format_rfc3339, utc_now
+from community_intern.knowledge_cache.utils import format_rfc3339, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 def atomic_write_json(path: Path, payload: dict) -> None:
@@ -76,9 +80,9 @@ def _decode_record(payload: dict) -> CacheRecord:
         )
     return CacheRecord(
         source_type=payload["source_type"],
-        content_hash=payload["content_hash"],
-        summary_text=payload["summary_text"],
-        last_indexed_at=payload["last_indexed_at"],
+        content_hash=payload.get("content_hash", ""),
+        summary_text=payload.get("summary_text", ""),
+        last_indexed_at=payload.get("last_indexed_at", ""),
         summary_pending=bool(payload.get("summary_pending", False)),
         file=file_value,
         url=url_value,
@@ -103,3 +107,46 @@ def decode_cache(payload: dict) -> CacheState:
         generated_at=payload.get("generated_at", format_rfc3339(utc_now())),
         sources=sources,
     )
+
+
+def read_cache_file(path: Path) -> CacheState:
+    if not path.exists():
+        return CacheState(schema_version=SchemaVersion, generated_at=format_rfc3339(utc_now()), sources={})
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        cache = decode_cache(payload)
+        if cache.schema_version != SchemaVersion:
+            logger.warning(
+                "Cache schema version mismatch, starting fresh. path=%s expected=%s actual=%s",
+                path,
+                SchemaVersion,
+                cache.schema_version,
+            )
+            return CacheState(schema_version=SchemaVersion, generated_at=format_rfc3339(utc_now()), sources={})
+        return cache
+    except Exception:
+        logger.exception("Failed to read cache file, starting fresh. path=%s", path)
+        return CacheState(schema_version=SchemaVersion, generated_at=format_rfc3339(utc_now()), sources={})
+
+
+def build_index_entries(cache: CacheState, *, source_types: Sequence[SourceType], prefix: str) -> list[str]:
+    entries: list[str] = []
+    for source_type in source_types:
+        group: list[tuple[str, str]] = []
+        for source_id, record in cache.sources.items():
+            if record.source_type != source_type:
+                continue
+            summary = record.summary_text.strip()
+            if not summary:
+                continue
+            group.append((source_id, summary))
+        for source_id, summary in sorted(group, key=lambda item: item[0]):
+            identifier = f"{prefix}{source_id}".strip()
+            entries.append(f"{identifier}\n{summary}".strip())
+    return entries
+
+
+def write_index_file(path: Path, entries: Iterable[str]) -> None:
+    content = "\n\n".join([e for e in entries if e.strip()])
+    atomic_write_text(path, content)
+

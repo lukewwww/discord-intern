@@ -53,6 +53,8 @@ The Knowledge Base uses a persistent cache metadata file to support incremental 
 
 The cache schema and the full incremental update requirements are specified in [`./module-knowledge-base-cache.md`](./module-knowledge-base-cache.md).
 
+The shared indexing component is specified in [`./module-knowledge-indexer.md`](./module-knowledge-indexer.md).
+
 ## Index artifact format
 
 The index is intended to be small and fast to read at runtime. It MUST be a **UTF-8 text file**. The AI module may send the full index text to the LLM for source selection, so the format should prioritize readability and stable diffs.
@@ -66,7 +68,7 @@ Both indices follow the same format. Each entry MUST be:
 - A single line containing the source identifier:
   - For files: `kb:<rel_path>` where `<rel_path>` is the file path relative to the knowledge base folder
   - For web sources: `kb:<url>` where `<url>` is the full URL
-  - For team topics: `team:<topic_filename>` (for example `team:get-test-tokens.json`)
+  - For team topics: `team:<topic_filename>` (for example `team:get-test-tokens.txt`)
 - Followed by one or more lines of free-text description for source selection
 
 Entries MUST be separated by at least one blank line.
@@ -115,7 +117,7 @@ The KB module reads team knowledge but does not generate or modify it:
 - Load the team index from `kb.team_index_path` (read-only)
 - Load topic files from `kb.team_topics_dir` when selected by the LLM (read-only)
 - Team knowledge capture, indexing, and caching are handled by a separate module. See [`./module-team-knowledge-capture.md`](./module-team-knowledge-capture.md).
-- Both the KB module and the Team Knowledge Capture module share common cache utilities to ensure consistency. See [`./module-knowledge-base-cache.md`](./module-knowledge-base-cache.md).
+- Both the KB module and the Team Knowledge Capture module use shared indexing utilities to ensure consistency. See [`./module-knowledge-base-cache.md`](./module-knowledge-base-cache.md).
 
 ### Index generation
 

@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from pathlib import Path
 from typing import List
 
 from pydantic import BaseModel, Field
 
 from community_intern.ai.interfaces import AIClient
-from community_intern.ai.interfaces import LLMTextResult
 from community_intern.config.models import KnowledgeBaseSettings
-from community_intern.kb.cache_io import atomic_write_json
-from community_intern.kb.cache_models import CacheRecord, CacheState, SchemaVersion
-from community_intern.kb.cache_utils import format_rfc3339, utc_now
+from community_intern.knowledge_cache.indexer import KnowledgeIndexer
+from community_intern.knowledge_cache.providers.file_folder import FileFolderProvider
 from community_intern.team_kb.models import QAPair, Turn
 from community_intern.team_kb.raw_archive import RawArchive
-from community_intern.team_kb.topic_storage import TopicStorage, qa_pair_to_dict
+from community_intern.team_kb.topic_storage import TopicStorage, format_topic_block
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +67,16 @@ class TeamKnowledgeManager:
 
         self._raw_archive = RawArchive(config.team_raw_dir)
         self._topic_storage = TopicStorage(config.team_topics_dir, config.team_index_path)
-        self._cache_path = Path(config.team_index_cache_path)
+        self._topic_indexer = KnowledgeIndexer(
+            cache_path=config.team_index_cache_path,
+            index_path=config.team_index_path,
+            index_prefix=TEAM_SOURCE_ID_PREFIX,
+            summarization_prompt=config.team_summarization_prompt,
+            summarization_concurrency=config.summarization_concurrency,
+            ai_client=ai_client,
+            providers=[FileFolderProvider(sources_dir=config.team_topics_dir)],
+            source_type_order=["file"],
+        )
 
     async def capture_qa(
         self,
@@ -118,7 +123,7 @@ class TeamKnowledgeManager:
         Team index on disk uses namespaced identifiers (team:<topic_filename>).
 
         For topic classification prompts, we present identifiers without the prefix to keep
-        topic naming stable (topic_name remains "<slug>" or "<slug>.json").
+        topic naming stable (topic_name remains "<slug>" or "<slug>.txt").
         """
         text = index_text.strip()
         if not text:
@@ -180,7 +185,10 @@ class TeamKnowledgeManager:
             topic_name,
         )
 
-        filename = topic_name if topic_name.endswith(".json") else f"{topic_name}.json"
+        raw = topic_name.strip()
+        if raw.endswith(".json"):
+            raw = raw[: -len(".json")]
+        filename = raw if raw.endswith(".txt") else f"{raw}.txt"
         topic_exists = self._topic_storage.topic_exists(filename)
 
         if topic_exists:
@@ -190,19 +198,15 @@ class TeamKnowledgeManager:
 
     async def _create_new_topic(self, qa_pair: QAPair, filename: str) -> None:
         self._topic_storage.create_topic(filename, qa_pair)
-        await self._update_index_for_topic(filename)
+        await self._topic_indexer.notify_changed(filename)
 
         logger.info("Created new topic. filename=%s", filename)
 
     async def _integrate_into_topic(self, qa_pair: QAPair, filename: str) -> None:
-        existing_pairs = self._topic_storage.load_topic(filename)
-        existing_content = [qa_pair_to_dict(qa) for qa in existing_pairs]
-        new_qa_dict = qa_pair_to_dict(qa_pair)
+        existing_text = self._topic_storage.load_topic_as_text(filename).strip()
+        new_block = format_topic_block(qa_pair).strip()
 
-        user_content = (
-            f"Existing topic file content:\n{json.dumps(existing_content, indent=2)}\n\n"
-            f"---\n\nNew Q&A pair to add:\n{json.dumps(new_qa_dict, indent=2)}"
-        )
+        user_content = f"Existing topic file content:\n{existing_text}\n\n---\n\nNew Q&A pair to add:\n{new_block}"
 
         try:
             system_prompt = _compose_system_prompt(
@@ -239,7 +243,7 @@ class TeamKnowledgeManager:
 
         self._topic_storage.add_to_topic(filename, qa_pair, remove_ids)
 
-        await self._update_index_for_topic(filename)
+        await self._topic_indexer.notify_changed(filename)
 
         logger.info(
             "Integrated QA into topic. filename=%s qa_id=%s removed_count=%d",
@@ -248,144 +252,12 @@ class TeamKnowledgeManager:
             len(remove_ids),
         )
 
-    async def _update_index_for_topic(self, filename: str) -> None:
-        cache = self._load_cache()
-        cached_record = cache.sources.get(filename)
-
-        current_hash = self._topic_storage.get_topic_hash(filename) or ""
-
-        if cached_record and cached_record.content_hash == current_hash:
-            return
-
-        if cached_record:
-            description = cached_record.summary_text
-        else:
-            pairs = self._topic_storage.load_topic(filename)
-            topics = set()
-            for qa in pairs:
-                for turn in qa.turns:
-                    if turn.role == "user":
-                        topics.add(turn.content[:50])
-            description = f"Q&A about: {', '.join(list(topics)[:3])}"
-
-            try:
-                topic_text = self._format_topic_for_summarization(pairs)
-                system_prompt = _compose_system_prompt(
-                    self._config.team_summarization_prompt,
-                    self._ai_client.project_introduction,
-                )
-                result = await self._ai_client.invoke_llm(
-                    system_prompt=system_prompt,
-                    user_content=topic_text,
-                    response_model=LLMTextResult,
-                )
-                description = result.text.strip()
-            except Exception:
-                logger.warning("Failed to summarize topic for index. filename=%s", filename)
-
-        cache.sources[filename] = CacheRecord(
-            source_type="team_topic",
-            content_hash=current_hash,
-            summary_text=description,
-            last_indexed_at=format_rfc3339(utc_now()),
-            summary_pending=False,
-        )
-
-        self._save_cache(cache)
-        self._rebuild_index_from_cache(cache)
-
-    def _format_topic_for_summarization(self, pairs: list[QAPair]) -> str:
-        lines = []
-        for qa in pairs:
-            for turn in qa.turns:
-                prefix = "Q:" if turn.role == "user" else "A:"
-                lines.append(f"{prefix} {turn.content}")
-            lines.append("")
-        return "\n".join(lines)
-
-    def _rebuild_index_from_cache(self, cache: CacheState) -> None:
-        entries: list[tuple[str, str]] = []
-        for source_id, record in sorted(cache.sources.items()):
-            if record.summary_text.strip():
-                entries.append((source_id, record.summary_text))
-        self._topic_storage.save_index(entries, source_id_prefix=TEAM_SOURCE_ID_PREFIX)
-
-    def _load_cache(self) -> CacheState:
-        if not self._cache_path.exists():
-            return CacheState(
-                schema_version=SchemaVersion,
-                generated_at=format_rfc3339(utc_now()),
-                sources={},
-            )
-
-        try:
-            content = self._cache_path.read_text(encoding="utf-8")
-            data = json.loads(content)
-            if data.get("schema_version") != SchemaVersion:
-                logger.warning("Cache schema version mismatch, starting fresh.")
-                return CacheState(
-                    schema_version=SchemaVersion,
-                    generated_at=format_rfc3339(utc_now()),
-                    sources={},
-                )
-
-            sources = {}
-            for source_id, record_data in data.get("sources", {}).items():
-                sources[source_id] = CacheRecord(
-                    source_type=record_data.get("source_type", "team_topic"),
-                    content_hash=record_data.get("content_hash", ""),
-                    summary_text=record_data.get("summary_text", ""),
-                    last_indexed_at=record_data.get("last_indexed_at", ""),
-                    summary_pending=record_data.get("summary_pending", False),
-                )
-
-            return CacheState(
-                schema_version=data.get("schema_version", SchemaVersion),
-                generated_at=data.get("generated_at", format_rfc3339(utc_now())),
-                sources=sources,
-            )
-        except (OSError, json.JSONDecodeError):
-            logger.exception("Failed to load team KB cache.")
-            return CacheState(
-                schema_version=SchemaVersion,
-                generated_at=format_rfc3339(utc_now()),
-                sources={},
-            )
-
-    def _save_cache(self, cache: CacheState) -> None:
-        cache.generated_at = format_rfc3339(utc_now())
-
-        sources_data = {}
-        for source_id, record in cache.sources.items():
-            sources_data[source_id] = {
-                "source_type": record.source_type,
-                "content_hash": record.content_hash,
-                "summary_text": record.summary_text,
-                "last_indexed_at": record.last_indexed_at,
-                "summary_pending": record.summary_pending,
-            }
-
-        data = {
-            "schema_version": cache.schema_version,
-            "generated_at": cache.generated_at,
-            "sources": sources_data,
-        }
-
-        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(self._cache_path, data)
-
     async def regenerate(self) -> None:
         logger.info("Starting team knowledge base regeneration.")
 
         async with self._lock:
             self._topic_storage.clear_all()
-
-            empty_cache = CacheState(
-                schema_version=SchemaVersion,
-                generated_at=format_rfc3339(utc_now()),
-                sources={},
-            )
-            self._save_cache(empty_cache)
+            await self._topic_indexer.run_once()
 
             all_pairs = self._raw_archive.load_all()
             logger.info("Loaded %d QA pairs from raw archive.", len(all_pairs))

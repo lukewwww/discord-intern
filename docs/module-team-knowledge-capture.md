@@ -192,9 +192,9 @@ data/team-knowledge/
     2026-W03.txt
     ...
   topics/                         # Tier 2: Topic-indexed documents
-    node-startup-issues.json      # JSON format for easy QA pair manipulation
-    token-deposits.json
-    relay-account-setup.json
+    node-startup-issues.txt       # Plain text, LLM-ready
+    token-deposits.txt
+    relay-account-setup.txt
     ...
   index-team.txt                  # Index for topic documents (loaded by KB module)
   index-team-cache.json           # Cache for incremental index updates (same schema as KB cache)
@@ -226,47 +226,39 @@ Raw file metadata fields:
 - `conversation_id`: Thread ID (prefixed with `thread_`) or root message ID (prefixed with `reply_`) for deduplication
 - `message_ids`: Comma-separated list of Discord message IDs included in this capture
 
-**Topic files (Tier 2)** use JSON format for easy QA pair identification and manipulation:
+**Topic files (Tier 2)** use plain text format optimized for direct LLM consumption and stable diffing:
 
-```json
-[
-  {
-    "id": "qa_20260115_143200",
-    "timestamp": "2026-01-15T14:32:00Z",
-    "turns": [
-      {"role": "user", "content": "How do I start a Crynux node?"},
-      {"role": "team", "content": "You can start a node by running the Docker container..."}
-    ]
-  },
-  {
-    "id": "qa_20260116_091500",
-    "timestamp": "2026-01-16T09:15:00Z",
-    "turns": [
-      {"role": "user", "content": "My node shows GPU not detected, what should I do?"},
-      {"role": "team", "content": "First, make sure your NVIDIA drivers are up to date."},
-      {"role": "user", "content": "I'm using an RTX 3080"},
-      {"role": "team", "content": "Then check if Docker has GPU access..."}
-    ]
-  }
-]
+```
+--- QA ---
+id: qa_20260115_143200
+timestamp: 2026-01-15T14:32:00Z
+User: How do I start a Crynux node?
+Team: You can start a node by running the Docker container...
+
+--- QA ---
+id: qa_20260116_091500
+timestamp: 2026-01-16T09:15:00Z
+User: My node shows GPU not detected, what should I do?
+Team: First, make sure your NVIDIA drivers are up to date.
+User: I'm using an RTX 3080
+Team: Then check if Docker has GPU access...
 ```
 
-JSON format advantages:
-- Each QA pair has a unique ID for precise reference
-- LLM can specify which pairs to remove by ID
-- Easy to parse and validate
-- `turns` array preserves the original order of multi-turn conversations
+Format rules:
+- Each Q&A block starts with `--- QA ---`
+- Each block MUST include `id:` and `timestamp:` for stable reference and caching
+- Each conversation turn starts with `User:` or `Team:`
 
 ### Index File Format
 
 The index follows the existing knowledge base format:
 
 ```
-node-startup-issues.txt
+team:node-startup-issues.txt
 Common questions about starting Crynux nodes, including GPU detection failures,
 Docker configuration, and network connectivity problems.
 
-token-deposits.txt
+team:token-deposits.txt
 Questions about depositing tokens into the Crynux Portal, relay account setup,
 and cross-chain transfers between supported L2 networks.
 ```
@@ -279,16 +271,13 @@ Format rules:
 
 ### Index Cache
 
-The `index-team-cache.json` file tracks topic file states to avoid unnecessary LLM calls when regenerating index entries. This cache uses the shared schema and utilities defined in [`./module-knowledge-base-cache.md`](./module-knowledge-base-cache.md).
+The team index cache (`index-team-cache.json`) stores persistent state for incremental updates of `index-team.txt`.
 
-Differences from main KB cache:
-- `source_type` is always `"team_topic"` (no file metadata or URL-specific fields)
-- No `summary_pending` flag needed (simpler single-phase processing)
+This cache uses the same schema as the Knowledge Base cache. See [`./module-knowledge-base-cache.md`](./module-knowledge-base-cache.md).
 
-Cache behavior:
-- After updating a topic file, compute its content hash using `hash_text`
-- If the hash matches the cached value, reuse the cached `summary_text`
-- If the hash differs, call LLM to generate a new summary and update cache
+The shared indexing component is specified in [`./module-knowledge-indexer.md`](./module-knowledge-indexer.md).
+
+Team Knowledge indexing uses file sources only. Topic files under `topics/` are summarized into `index-team.txt` using `kb.team_summarization_prompt`.
 
 ### LLM Classification Prompt
 
@@ -318,7 +307,7 @@ Q&A pair lacking sufficient information:
 }
 ```
 
-The system checks if `{topic_name}.json` exists to determine whether this is a new topic.
+The system checks if `{topic_name}.txt` exists to determine whether this is a new topic.
 
 **Skip behavior**: The LLM should set `skip: true` when the text conversation is not self-contained or cannot guide future answers. Common cases include:
 - The question uses vague references like "this error" or "this issue" without describing what it is
@@ -332,7 +321,7 @@ Skipped Q&A pairs remain in the raw archive for audit purposes but are not added
 ### LLM Integration Prompt
 
 When updating an existing topic file, the integration prompt receives:
-- The current topic file content (JSON array of existing Q&A pairs with IDs)
+- The current topic file content (plain text, including Q&A block IDs)
 - The new Q&A pair to add
 
 Expected output (JSON):
@@ -416,12 +405,12 @@ kb:
 ### Regenerate Command
 
 ```bash
-python -m community_intern regenerate-team-kb
+python -m community_intern init_team_kb
 ```
 
 Workflow:
 1. Read all Q&A pairs from `raw/` directory
-2. Clear `topics/` directory and `index.txt`
+2. Clear `topics/` directory and `index-team.txt`
 3. Reprocess all pairs through LLM classification and integration
 4. Rebuild complete indexed library
 
@@ -536,30 +525,26 @@ The topic-indexed library integrates with the main Knowledge Base module (see `m
 
 ### Content Formatting for LLM
 
-When loading topic files for answer generation, the KB module formats the JSON into readable conversation text:
+When loading topic files for answer generation, the KB module loads the topic file as plain text and passes it through unchanged:
 
 ```
---- 2026-01-16T09:15:00Z ---
+--- QA ---
+id: qa_20260116_091500
+timestamp: 2026-01-16T09:15:00Z
 User: My node shows GPU not detected, what should I do?
 Team: First, make sure your NVIDIA drivers are up to date.
-User: I'm using an RTX 3080
-Team: Then check if Docker has GPU access...
-
---- 2026-01-17T10:30:00Z ---
-User: How do I start a Crynux node?
-Team: You can start a node by running the Docker container...
 ```
 
 This format:
 - Preserves the multi-turn conversation order
 - Is easy for the LLM to understand
-- Removes JSON syntax overhead
-- Groups each Q&A exchange with its timestamp
+- Includes stable Q&A IDs for remove-by-id operations
+- Includes timestamps for recency and cache invalidation
 
 Module boundaries:
 - This module owns all files under `team-knowledge/`, `index-team.txt`, and `index-team-cache.json`
 - The KB module only reads these files, never writes them
-- Both modules share cache utilities (`cache_utils`) for consistency (see [`./module-knowledge-base-cache.md`](./module-knowledge-base-cache.md) § Shared utilities)
+- Both modules use shared indexing utilities for consistency (see [`./module-knowledge-base-cache.md`](./module-knowledge-base-cache.md) § Shared utilities)
 
 ---
 
@@ -568,7 +553,7 @@ Module boundaries:
 - Discord adapter ([`module-bot-integration.md`](./module-bot-integration.md)): This module implements `QACaptureHandler`; the adapter provides message classification, context gathering, and routing
 - AI module ([`module-ai-response.md`](./module-ai-response.md)): Provides LLM calls for classification, integration, and index summarization via a shared `ChatCrynux` instance.
 - Shared cache modules:
-  - `cache_utils`: Timestamp utilities.
-  - `cache_io`: Cache I/O, index utilities.
-  - `cache_models`.
+  - `src/community_intern/knowledge_cache/utils.py`
+  - `src/community_intern/knowledge_cache/io.py`
+  - `src/community_intern/knowledge_cache/models.py`
 - Knowledge Base module: Loads team knowledge (read-only)

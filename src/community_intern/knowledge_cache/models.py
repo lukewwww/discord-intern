@@ -24,7 +24,7 @@ class UrlMetadata:
     next_check_at: str
 
 
-SourceType = Literal["file", "url", "team_topic"]
+SourceType = Literal["file", "url"]
 
 
 @dataclass(slots=True)
@@ -43,3 +43,4 @@ class CacheState:
     schema_version: int
     generated_at: str
     sources: Dict[str, CacheRecord]
+

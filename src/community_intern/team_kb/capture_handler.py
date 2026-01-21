@@ -10,7 +10,7 @@ import discord
 from community_intern.adapters.discord.handlers import ActionHandler
 from community_intern.adapters.discord.classifier import MessageClassifier
 from community_intern.adapters.discord.models import GatheredContext, MessageContext
-from community_intern.kb.cache_utils import format_rfc3339
+from community_intern.knowledge_cache.utils import format_rfc3339
 from community_intern.team_kb.models import Turn
 
 if TYPE_CHECKING:

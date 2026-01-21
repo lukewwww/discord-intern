@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from community_intern.kb.cache_utils import format_rfc3339, utc_now
+from community_intern.knowledge_cache.utils import format_rfc3339, utc_now
 from community_intern.team_kb.models import QAPair, Turn
 
 logger = logging.getLogger(__name__)

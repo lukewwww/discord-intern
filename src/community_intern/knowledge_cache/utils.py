@@ -32,3 +32,4 @@ def normalize_text(text: str) -> str:
 def hash_text(text: str) -> str:
     normalized = normalize_text(text)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+

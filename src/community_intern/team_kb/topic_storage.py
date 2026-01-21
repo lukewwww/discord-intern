@@ -1,39 +1,90 @@
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Optional
 
-from community_intern.kb.cache_io import atomic_write_json, atomic_write_text
-from community_intern.kb.cache_utils import hash_text
+from community_intern.knowledge_cache.io import atomic_write_text
+from community_intern.knowledge_cache.utils import hash_text
 from community_intern.team_kb.models import QAPair
 
 logger = logging.getLogger(__name__)
 
-
-def qa_pair_to_dict(qa: QAPair) -> dict:
-    from community_intern.team_kb.models import Turn
-
-    return {
-        "id": qa.id,
-        "timestamp": qa.timestamp,
-        "turns": [{"role": t.role, "content": t.content} for t in qa.turns],
-    }
+QA_BLOCK_MARKER = "--- QA ---"
 
 
-def dict_to_qa_pair(data: dict) -> QAPair:
-    from community_intern.team_kb.models import Turn
+def _format_turn_lines(*, role: str, content: str) -> list[str]:
+    lines = content.splitlines() or [""]
+    first = f"{role}: {lines[0]}"
+    rest = [f"  {line}" for line in lines[1:]]
+    return [first, *rest]
 
-    turns = [
-        Turn(role=t["role"], content=t["content"])
-        for t in data.get("turns", [])
-    ]
-    return QAPair(
-        id=data["id"],
-        timestamp=data["timestamp"],
-        turns=turns,
-    )
+def format_topic_block(qa: QAPair) -> str:
+    lines: list[str] = [QA_BLOCK_MARKER, f"id: {qa.id}", f"timestamp: {qa.timestamp}"]
+    for turn in qa.turns:
+        if turn.role == "user":
+            lines.extend(_format_turn_lines(role="User", content=turn.content))
+        elif turn.role == "team":
+            lines.extend(_format_turn_lines(role="Team", content=turn.content))
+    lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _remove_qa_blocks_by_id(*, text: str, remove_ids: set[str]) -> tuple[str, int]:
+    """
+    Remove QA blocks whose `id:` line matches one of remove_ids.
+
+    This is a minimal parser used only for remove-by-id operations. It preserves the
+    rest of the topic file verbatim as much as possible.
+    """
+    if not text.strip():
+        return "", 0
+
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+    prefix: list[str] = []
+    blocks: list[list[str]] = []
+
+    i = 0
+    while i < len(lines) and lines[i] != QA_BLOCK_MARKER:
+        prefix.append(lines[i])
+        i += 1
+
+    while i < len(lines):
+        if lines[i] != QA_BLOCK_MARKER:
+            i += 1
+            continue
+        block: list[str] = [lines[i]]
+        i += 1
+        while i < len(lines) and lines[i] != QA_BLOCK_MARKER:
+            block.append(lines[i])
+            i += 1
+        blocks.append(block)
+
+    kept_blocks: list[list[str]] = []
+    removed = 0
+    for block in blocks:
+        qa_id = ""
+        for line in block:
+            if line.startswith("id:"):
+                qa_id = line[len("id:") :].strip()
+                break
+        if qa_id and qa_id in remove_ids:
+            removed += 1
+            continue
+        kept_blocks.append(block)
+
+    out_lines: list[str] = []
+    if any(line.strip() for line in prefix):
+        out_lines.extend(prefix)
+
+    for block in kept_blocks:
+        if out_lines and out_lines[-1] != "":
+            out_lines.append("")
+        out_lines.extend(block)
+
+    normalized = "\n".join(out_lines).strip() + "\n" if out_lines else ""
+    return normalized, removed
 
 
 class TopicStorage:
@@ -45,49 +96,50 @@ class TopicStorage:
         self._topics_dir.mkdir(parents=True, exist_ok=True)
         self._index_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def load_topic(self, filename: str) -> list[QAPair]:
-        file_path = self._topics_dir / filename
-        if not file_path.exists():
-            return []
-
-        try:
-            content = file_path.read_text(encoding="utf-8")
-            data = json.loads(content)
-            return [dict_to_qa_pair(item) for item in data]
-        except (OSError, json.JSONDecodeError, KeyError):
-            logger.exception("Failed to load topic file. filename=%s", filename)
-            return []
-
-    def save_topic(self, filename: str, qa_pairs: list[QAPair]) -> None:
-        self.ensure_dirs()
-        file_path = self._topics_dir / filename
-        data = [qa_pair_to_dict(qa) for qa in qa_pairs]
-        atomic_write_json(file_path, data)
-        logger.debug("Saved topic file. filename=%s qa_count=%d", filename, len(qa_pairs))
-
     def add_to_topic(
         self,
         filename: str,
         new_qa: QAPair,
         remove_ids: Optional[list[str]] = None,
     ) -> None:
-        qa_pairs = self.load_topic(filename)
+        self.ensure_dirs()
+        file_path = self._topics_dir / filename
+        new_block = format_topic_block(new_qa)
 
         if remove_ids:
             remove_set = set(remove_ids)
-            qa_pairs = [qa for qa in qa_pairs if qa.id not in remove_set]
-            logger.debug(
-                "Removed %d obsolete QA pairs from topic. filename=%s removed_ids=%s",
-                len(remove_ids),
-                filename,
-                remove_ids,
-            )
+            try:
+                existing = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
+            except OSError:
+                logger.exception("Failed to read topic file for removal. filename=%s", filename)
+                raise
+            rewritten, removed_count = _remove_qa_blocks_by_id(text=existing, remove_ids=remove_set)
+            if removed_count:
+                logger.debug(
+                    "Removed obsolete QA blocks from topic. filename=%s removed_count=%d removed_ids=%s",
+                    filename,
+                    removed_count,
+                    remove_ids,
+                )
+            base = rewritten
+        else:
+            try:
+                base = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
+            except OSError:
+                logger.exception("Failed to read topic file for append. filename=%s", filename)
+                raise
 
-        qa_pairs.append(new_qa)
-        self.save_topic(filename, qa_pairs)
+        if base and not base.endswith("\n"):
+            base += "\n"
+
+        combined = (base + new_block).lstrip("\n")
+        atomic_write_text(file_path, combined)
+        logger.debug("Appended QA block to topic file. filename=%s", filename)
 
     def create_topic(self, filename: str, first_qa: QAPair) -> None:
-        self.save_topic(filename, [first_qa])
+        self.ensure_dirs()
+        file_path = self._topics_dir / filename
+        atomic_write_text(file_path, format_topic_block(first_qa))
         logger.info("Created new topic file. filename=%s", filename)
 
     def topic_exists(self, filename: str) -> bool:
@@ -97,12 +149,13 @@ class TopicStorage:
     def list_topics(self) -> list[str]:
         if not self._topics_dir.exists():
             return []
-        return [f.name for f in self._topics_dir.glob("*.json")]
+        return [f.name for f in self._topics_dir.glob("*.txt")]
 
     def clear_all(self) -> None:
         if self._topics_dir.exists():
-            for f in self._topics_dir.glob("*.json"):
-                f.unlink()
+            for pattern in ("*.txt", "*.json"):
+                for f in self._topics_dir.glob(pattern):
+                    f.unlink()
             logger.info("Cleared all topic files.")
 
         if self._index_path.exists():
@@ -141,24 +194,8 @@ class TopicStorage:
             return None
 
     def load_topic_as_text(self, filename: str) -> str:
-        """Load topic file and format as readable conversation text for LLM."""
-        qa_pairs = self.load_topic(filename)
-        return format_qa_pairs_as_text(qa_pairs)
-
-
-def format_qa_pairs_as_text(qa_pairs: list[QAPair]) -> str:
-    """Format QA pairs into readable conversation text for LLM consumption."""
-    lines = []
-    for qa in qa_pairs:
-        if qa.timestamp:
-            lines.append(f"--- {qa.timestamp} ---")
-
-        for turn in qa.turns:
-            if turn.role == "user":
-                lines.append(f"User: {turn.content}")
-            elif turn.role == "team":
-                lines.append(f"Team: {turn.content}")
-
-        lines.append("")
-
-    return "\n".join(lines)
+        """Load topic file as plain text for LLM consumption."""
+        file_path = self._topics_dir / filename
+        if not file_path.exists():
+            return ""
+        return file_path.read_text(encoding="utf-8")

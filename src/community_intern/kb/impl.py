@@ -2,27 +2,44 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
-from typing import Sequence
+from typing import Optional, Sequence
 
 from community_intern.ai.interfaces import AIClient
 from community_intern.config.models import KnowledgeBaseSettings
 from community_intern.kb.interfaces import IndexEntry, SourceContent
-from community_intern.kb.cache_manager import KnowledgeBaseCacheManager, KB_SOURCE_ID_PREFIX
 from community_intern.kb.web_fetcher import WebFetcher
+from community_intern.knowledge_cache.indexer import KnowledgeIndexer
+from community_intern.knowledge_cache.providers.file_folder import FileFolderProvider
+from community_intern.knowledge_cache.providers.url_links import UrlLinksProvider
 from community_intern.team_kb.topic_storage import TopicStorage
 
 logger = logging.getLogger(__name__)
 
+KB_SOURCE_ID_PREFIX = "kb:"
 TEAM_SOURCE_ID_PREFIX = "team:"
 
 class FileSystemKnowledgeBase:
     def __init__(self, config: KnowledgeBaseSettings, ai_client: AIClient):
         self.config = config
         self.ai_client = ai_client
-        self._index_lock = asyncio.Lock()
-        self._cache_manager = KnowledgeBaseCacheManager(config=config, ai_client=ai_client, lock=self._index_lock)
         self._topic_storage = TopicStorage(config.team_topics_dir, config.team_index_path)
+        self._indexer = KnowledgeIndexer(
+            cache_path=config.index_cache_path,
+            index_path=config.index_path,
+            index_prefix=KB_SOURCE_ID_PREFIX,
+            summarization_prompt=config.summarization_prompt,
+            summarization_concurrency=config.summarization_concurrency,
+            ai_client=ai_client,
+            providers=[
+                FileFolderProvider(sources_dir=config.sources_dir),
+                UrlLinksProvider(config=config),
+            ],
+            source_type_order=["file", "url"],
+        )
+        self._runtime_task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
 
     def _extract_team_topic_filename(self, source_id: str) -> str:
         raw = source_id.strip()
@@ -99,14 +116,35 @@ class FileSystemKnowledgeBase:
     async def build_index(self) -> None:
         """Build the startup index artifact on disk."""
         logger.info("Starting knowledge base index build.")
-        await self._cache_manager.build_index_incremental()
+        await self._indexer.run_once()
         logger.info("Knowledge base index build completed.")
 
     def start_runtime_refresh(self) -> None:
-        self._cache_manager.start_runtime_refresh()
+        if self._runtime_task and not self._runtime_task.done():
+            return
+        self._stop_event.clear()
+        self._runtime_task = asyncio.create_task(self._runtime_loop())
 
     async def stop_runtime_refresh(self) -> None:
-        await self._cache_manager.stop_runtime_refresh()
+        if not self._runtime_task:
+            return
+        self._stop_event.set()
+        await self._runtime_task
+        self._runtime_task = None
+
+    async def _runtime_loop(self) -> None:
+        while not self._stop_event.is_set():
+            started = time.monotonic()
+            try:
+                await self._indexer.run_once()
+            except Exception:
+                logger.exception("Knowledge base runtime refresh tick failed.")
+            elapsed = time.monotonic() - started
+            sleep_seconds = max(0.0, self.config.runtime_refresh_tick_seconds - elapsed)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=sleep_seconds)
+            except asyncio.TimeoutError:
+                continue
 
     async def load_source_content(self, *, source_id: str) -> SourceContent:
         """Load full source content for a file path or URL identifier."""

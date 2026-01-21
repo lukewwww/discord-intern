@@ -68,7 +68,7 @@ Source ID rules:
 - For knowledge base sources, `source_id` is namespaced as `kb:<identifier>`.
   - For file sources: `kb:<rel_path>` where `<rel_path>` is a path relative to `kb.sources_dir`.
   - For web sources: `kb:<url>` where `<url>` is the full URL.
-- For team topic sources, `source_id` is namespaced as `team:<topic_filename>` (for example `team:get-test-tokens.json`).
+- For team topic sources, `source_id` is namespaced as `team:<topic_filename>` (for example `team:get-test-tokens.txt`).
 
 #### High-level Node Graph
 
