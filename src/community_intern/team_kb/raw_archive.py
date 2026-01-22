@@ -22,7 +22,12 @@ def format_raw_qa_pair(qa_pair: QAPair) -> str:
     if qa_pair.message_ids:
         lines.append(f"message_ids: {', '.join(qa_pair.message_ids)}")
     for turn in qa_pair.turns:
-        prefix = "Q:" if turn.role == "user" else "A:"
+        if turn.role == "user":
+            prefix = "User:"
+        elif turn.role == "bot":
+            prefix = "Bot:"
+        else:
+            prefix = "Team:"
         lines.append(f"{prefix} {turn.content}")
     lines.append("")
     return "\n".join(lines)
@@ -52,10 +57,12 @@ def parse_raw_file(content: str) -> list[QAPair]:
             elif line.startswith("message_ids:"):
                 ids_str = line[len("message_ids:"):].strip()
                 message_ids = [mid.strip() for mid in ids_str.split(",") if mid.strip()]
-            elif line.startswith("Q:"):
-                turns.append(Turn(role="user", content=line[2:].strip()))
-            elif line.startswith("A:"):
-                turns.append(Turn(role="team", content=line[2:].strip()))
+            elif line.startswith("User:"):
+                turns.append(Turn(role="user", content=line[len("User:") :].strip()))
+            elif line.startswith("Team:"):
+                turns.append(Turn(role="team", content=line[len("Team:") :].strip()))
+            elif line.startswith("Bot:"):
+                turns.append(Turn(role="bot", content=line[len("Bot:") :].strip()))
 
         if timestamp and turns:
             qa_id = f"qa_{timestamp.replace('-', '').replace(':', '').replace('T', '_').replace('Z', '')}"

@@ -23,6 +23,7 @@ The module captures knowledge from team member replies in Discord and makes it a
 Messages from configured team member Discord accounts receive special handling:
 - Team member messages do not trigger the AI reply workflow
 - When a team member replies to a community user (via Discord reply or thread), the Q&A exchange is captured for the knowledge base
+- Bot messages are not stored in the team knowledge base
 
 ### F3: Complete Conversation Capture
 
@@ -32,7 +33,7 @@ The system captures complete Q&A exchanges from Discord:
 - Handle multi-turn conversations: user question → team answer → user follow-up → team follow-up answer are captured as a single Q&A pair
 - Preserve original message content without summarization
 
-**Thread handling**: When a team member posts in a thread, the entire thread history is captured as a single Q&A pair. If messages within the thread have reply references to other messages, those referenced messages are also included.
+**Thread handling**: When a team member posts in a thread, the capture includes the full thread message history plus the thread starter message from the parent channel. If any included message is a Discord reply, the capture also includes the referenced message chain and adjacent messages from the same author within the batching window.
 
 **Conversation-level deduplication**: Each capture includes a `conversation_id` (thread ID or reply chain root message ID) and `message_ids` list. During regeneration, the system keeps only the most complete version of each conversation (the one with the most message IDs), avoiding duplicate processing of incremental captures.
 
@@ -209,17 +210,17 @@ data/team-knowledge/
 timestamp: 2026-01-15T14:32:00Z
 conversation_id: thread_1458745245675032709
 message_ids: msg_123, msg_124, msg_125
-Q: How do I start a Crynux node?
-A: You can start a node by running the Docker container with the following command...
+User: How do I start a Crynux node?
+Team: You can start a node by running the Docker container with the following command...
 
 --- QA ---
 timestamp: 2026-01-16T09:15:00Z
 conversation_id: thread_1458745245675032710
 message_ids: msg_200, msg_201, msg_202, msg_203
-Q: My node shows GPU not detected, what should I do?
-Q: I'm using an RTX 3080
-A: First, make sure your NVIDIA drivers are up to date.
-A: Then check if Docker has GPU access by running nvidia-smi inside the container.
+User: My node shows GPU not detected, what should I do?
+User: I'm using an RTX 3080
+Team: First, make sure your NVIDIA drivers are up to date.
+Team: Then check if Docker has GPU access by running nvidia-smi inside the container.
 ```
 
 Raw file metadata fields:

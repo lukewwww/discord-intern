@@ -6,7 +6,7 @@ from typing import Literal, Sequence
 
 @dataclass(slots=True)
 class Turn:
-    role: Literal["user", "team"]
+    role: Literal["user", "team", "bot"]
     content: str
 
 

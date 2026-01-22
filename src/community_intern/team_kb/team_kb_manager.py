@@ -114,7 +114,12 @@ class TeamKnowledgeManager:
     def _format_qa_pair_for_llm(self, qa_pair: QAPair) -> str:
         lines = []
         for turn in qa_pair.turns:
-            prefix = "User:" if turn.role == "user" else "Team:"
+            if turn.role == "user":
+                prefix = "User:"
+            elif turn.role == "bot":
+                prefix = "Bot:"
+            else:
+                prefix = "Team:"
             lines.append(f"{prefix} {turn.content}")
         return "\n".join(lines)
 

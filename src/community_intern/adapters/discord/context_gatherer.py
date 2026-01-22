@@ -49,13 +49,87 @@ class ContextGatherer:
 
     async def _fetch_thread_history(self, thread: discord.Thread) -> list[discord.Message]:
         try:
-            return [m async for m in thread.history(limit=None, oldest_first=True)]
+            history = [m async for m in thread.history(limit=None, oldest_first=True)]
         except discord.DiscordException:
             logger.exception(
                 "Failed to load Discord thread history. thread_id=%s",
                 str(thread.id),
             )
             return []
+
+        extra: list[discord.Message] = []
+        extra.extend(await self._fetch_thread_starter_context(thread))
+        extra.extend(await self._fetch_reply_reference_context(history))
+
+        by_id: dict[int, discord.Message] = {m.id: m for m in history}
+        for msg in extra:
+            by_id.setdefault(msg.id, msg)
+
+        merged = list(by_id.values())
+        merged.sort(key=lambda m: m.created_at)
+        return merged
+
+    async def _fetch_thread_starter_context(self, thread: discord.Thread) -> list[discord.Message]:
+        starter_id = getattr(thread, "message_id", None)
+        parent = getattr(thread, "parent", None)
+        if starter_id is None or parent is None:
+            return []
+
+        try:
+            starter = await parent.fetch_message(starter_id)
+        except discord.NotFound:
+            logger.warning(
+                "Thread starter message not found. thread_id=%s starter_id=%s",
+                str(thread.id),
+                str(starter_id),
+            )
+            return []
+        except discord.Forbidden:
+            logger.warning(
+                "Forbidden from fetching thread starter message. thread_id=%s starter_id=%s",
+                str(thread.id),
+                str(starter_id),
+            )
+            return []
+        except discord.DiscordException:
+            logger.exception(
+                "Failed to fetch thread starter message. thread_id=%s starter_id=%s",
+                str(thread.id),
+                str(starter_id),
+            )
+            return []
+
+        starter_group = await self._expand_consecutive_messages(starter)
+        collected: list[discord.Message] = list(starter_group.messages)
+
+        if starter.reference is not None and starter.reference.message_id is not None:
+            _, chain = await self._resolve_reply_chain(starter)
+            for group in chain:
+                collected.extend(group.messages)
+
+        return collected
+
+    async def _fetch_reply_reference_context(
+        self,
+        messages: list[discord.Message],
+    ) -> list[discord.Message]:
+        extra: list[discord.Message] = []
+        processed: set[int] = set()
+
+        for msg in messages:
+            if msg.id in processed:
+                continue
+            processed.add(msg.id)
+
+            reference = msg.reference
+            if reference is None or reference.message_id is None:
+                continue
+
+            _, chain = await self._resolve_reply_chain(msg)
+            for group in chain:
+                extra.extend(group.messages)
+
+        return extra
 
     async def _resolve_reply_chain(
         self,
@@ -105,10 +179,59 @@ class ContextGatherer:
             return None
 
         try:
-            return await message.channel.fetch_message(reference.message_id)
+            target_channel = message.channel
+
+            ref_channel_id = getattr(reference, "channel_id", None)
+            current_channel_id = getattr(message.channel, "id", None)
+            if ref_channel_id is not None and current_channel_id is not None and ref_channel_id != current_channel_id:
+                target_channel = None
+                if message.guild is not None:
+                    target_channel = message.guild.get_channel(ref_channel_id)
+                    if target_channel is None:
+                        try:
+                            target_channel = await message.guild.fetch_channel(ref_channel_id)
+                        except discord.Forbidden:
+                            logger.warning(
+                                "Forbidden from fetching referenced channel. message_id=%s reference_channel_id=%s",
+                                str(message.id),
+                                str(ref_channel_id),
+                            )
+                            return None
+                        except discord.DiscordException:
+                            logger.exception(
+                                "Failed to fetch referenced channel. message_id=%s reference_channel_id=%s",
+                                str(message.id),
+                                str(ref_channel_id),
+                            )
+                            return None
+
+                if target_channel is None:
+                    logger.warning(
+                        "Referenced channel not available. message_id=%s reference_channel_id=%s",
+                        str(message.id),
+                        str(ref_channel_id),
+                    )
+                    return None
+
+            if not hasattr(target_channel, "fetch_message"):
+                logger.warning(
+                    "Referenced channel cannot fetch messages. message_id=%s reference_id=%s",
+                    str(message.id),
+                    str(reference.message_id),
+                )
+                return None
+
+            return await target_channel.fetch_message(reference.message_id)
         except discord.NotFound:
             logger.warning(
                 "Referenced message not found. message_id=%s reference_id=%s",
+                str(message.id),
+                str(reference.message_id),
+            )
+            return None
+        except discord.Forbidden:
+            logger.warning(
+                "Forbidden from fetching referenced message. message_id=%s reference_id=%s",
                 str(message.id),
                 str(reference.message_id),
             )

@@ -140,7 +140,12 @@ class QACaptureHandler(ActionHandler):
                 continue
 
             author_type = self._classifier.classify_author(msg.author.id)
-            role = "user" if author_type == "community_user" else "team"
+            if author_type == "community_user":
+                role = "user"
+            elif author_type == "bot":
+                continue
+            else:
+                role = "team"
             text = (msg.content or "").strip()
 
             if text:
@@ -166,7 +171,12 @@ class QACaptureHandler(ActionHandler):
                 conversation_id = f"reply_{root_msg_id}"
 
         for group in gathered_context.reply_chain:
-            role = "user" if group.author_type == "community_user" else "team"
+            if group.author_type == "community_user":
+                role = "user"
+            elif group.author_type == "bot":
+                continue
+            else:
+                role = "team"
             for msg in group.messages:
                 text = (msg.content or "").strip()
                 if text:
@@ -176,7 +186,14 @@ class QACaptureHandler(ActionHandler):
         for msg in gathered_context.batch:
             text = (msg.content or "").strip()
             if text:
-                turns.append(Turn(role="team", content=text))
+                if msg.author is not None and self._classifier is not None:
+                    author_type = self._classifier.classify_author(msg.author.id)
+                    if author_type == "bot":
+                        continue
+                    role = "team"
+                else:
+                    role = "team"
+                turns.append(Turn(role=role, content=text))
                 message_ids.append(str(msg.id))
 
         if not turns and gathered_context.reply_target_message is not None:
