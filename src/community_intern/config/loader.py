@@ -78,9 +78,12 @@ def _get_parent_mapping(config: MutableMapping[str, Any], path: Sequence[str]) -
     cur: MutableMapping[str, Any] = config
     for segment in path[:-1]:
         if segment not in cur:
-            dotted = ".".join(path)
-            raise KeyError(f"Unknown configuration key path: {dotted}")
+            cur[segment] = {}
         next_value = cur[segment]
+        if next_value is None:
+            next_value = {}
+            cur[segment] = next_value
+
         if not isinstance(next_value, dict):
             dotted = ".".join(path)
             raise TypeError(f"Configuration key path does not point to a mapping: {dotted}")
@@ -97,9 +100,6 @@ def _apply_env_overrides(config: MutableMapping[str, Any], env_prefix: str) -> N
         parent = _get_parent_mapping(config, segments)
         leaf = segments[-1]
         dotted = ".".join(segments)
-
-        if leaf not in parent:
-            raise KeyError(f"Unknown configuration key path: {dotted}")
 
         # We allow overriding any value; Pydantic will handle type coercion/validation later.
         parent[leaf] = value

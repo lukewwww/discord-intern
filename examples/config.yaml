@@ -19,7 +19,7 @@ ai_response:
     api_key: "REPLACE_ME"
     model: "Qwen/Qwen2.5-7B-Instruct"
     vram_limit: 24
-    structured_output_method: "json_schema" # "function_calling" if the model does not support native JSON schema structured output
+    structured_output_method: "function_calling" # "json_schema" if the model supports native JSON schema structured output, otherwise "function_calling" (default)
     timeout_seconds: 60
     max_retries: 2
 

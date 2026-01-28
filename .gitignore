@@ -212,4 +212,7 @@ __marimo__/
 !/data/**/.gitkeep
 
 # Local Cursor Rules
-.cursor/rules/local-env.mdc
+.cursor/rules/local-*
+
+# Local Skills
+.cursor/skills/local-*

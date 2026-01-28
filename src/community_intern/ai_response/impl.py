@@ -52,7 +52,8 @@ class AIClientImpl(AIClient):
             base_url=llm_config.base_url,
             api_key=llm_config.api_key,
             model=llm_config.model,
-            vram_limit=llm_config.vram_limit,
+        # Only pass vram_limit if it is not None
+        **({"vram_limit": llm_config.vram_limit} if llm_config.vram_limit is not None else {}),
             temperature=0.0,
             request_timeout=llm_config.timeout_seconds,
             max_retries=llm_config.max_retries,
