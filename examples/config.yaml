@@ -10,7 +10,7 @@ logging:
 
 discord:
   token: "REPLACE_ME"
-  message_batch_wait_seconds: 60
+  message_batch_wait_seconds: 180
   message_grouping_window_seconds: 300
   team_member_ids: []
 
