@@ -17,11 +17,11 @@ class ContextGatherer:
         self,
         *,
         classifier: MessageClassifier,
-        batch_wait_seconds: float,
+        grouping_window_seconds: float,
         max_reply_chain_depth: int = 10,
     ) -> None:
         self._classifier = classifier
-        self._batch_wait_seconds = batch_wait_seconds
+        self._grouping_window_seconds = grouping_window_seconds
         self._max_reply_chain_depth = max_reply_chain_depth
 
     async def gather(
@@ -260,7 +260,7 @@ class ContextGatherer:
         author_type = self._classifier.classify_author(author_id)
         messages: list[discord.Message] = [ref_msg]
 
-        quiet_window = timedelta(seconds=self._batch_wait_seconds)
+        quiet_window = timedelta(seconds=self._grouping_window_seconds)
 
         before_msgs = await self._fetch_messages_before(ref_msg, author_id, quiet_window)
         messages = before_msgs + messages

@@ -97,7 +97,7 @@ class MessageRouterCog(commands.Cog):
 
         self._context_gatherer = ContextGatherer(
             classifier=self._classifier,
-            batch_wait_seconds=self._settings.message_batch_wait_seconds,
+            grouping_window_seconds=self._settings.message_grouping_window_seconds,
         )
 
         self._action_router = self._build_action_router(bot_user_id)

@@ -46,6 +46,7 @@ class DiscordSettings(BaseModel):
 
     token: str
     message_batch_wait_seconds: float
+    message_grouping_window_seconds: float = 300.0
     team_member_ids: Sequence[str] = ()
 
 
