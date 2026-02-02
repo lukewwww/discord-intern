@@ -140,7 +140,7 @@ kb:
   team_index_path: "data/team-knowledge/index-team.txt"
   team_index_cache_path: "data/team-knowledge/index-team-cache.json"
   team_state_path: "data/team-knowledge/state.json"
-  team_start_qa_timestamp: ""
+  qa_raw_last_processed_id: ""
 
   team_classification_prompt: |
     You are a topic classifier for the Crynux team knowledge base.

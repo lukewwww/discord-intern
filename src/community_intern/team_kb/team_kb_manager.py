@@ -293,40 +293,22 @@ class TeamKnowledgeManager:
             try:
                 state = TeamKBState.model_validate_json(self._state_path.read_text(encoding="utf-8"))
             except Exception:
-                logger.warning("Failed to load team KB state. Resetting to empty.", exc_info=True)
+                raise RuntimeError("Failed to load team KB state. state.json is invalid.")
 
-        # Apply manual start timestamp from config if present
-        config_timestamp = self._config.team_start_qa_timestamp.strip()
-        if config_timestamp:
-            try:
-                from datetime import datetime, timedelta
-                # Parse the timestamp to subtract 1 second, ensuring a valid ID format
-                # that RawArchive.load_since can parse without error.
-                ts_str = config_timestamp.replace("Z", "+00:00")
-                dt = datetime.fromisoformat(ts_str)
-                dt_prev = dt - timedelta(seconds=1)
-
-                # Format back to our ID style
-                # We need to match _generate_qa_id logic:
-                # clean = timestamp.replace("-", "").replace(":", "").replace("T", "_").replace("Z", "")
-                # So we format to ISO first.
-                iso = dt_prev.isoformat().replace("+00:00", "Z")
-                config_threshold_id = self._generate_qa_id(iso)
-
-                if config_threshold_id > state.last_processed_qa_id:
-                    logger.info(
-                        "Using configured team_start_qa_timestamp as override. stored=%s config_ts=%s threshold=%s",
-                        state.last_processed_qa_id,
-                        config_timestamp,
-                        config_threshold_id,
-                    )
-                    state.last_processed_qa_id = config_threshold_id
-            except Exception:
-                logger.warning(
-                    "Failed to parse team_start_qa_timestamp for threshold calculation. config_ts=%s",
-                    config_timestamp,
-                    exc_info=True
+        # Apply manual raw processing cursor from config if present.
+        # This value behaves like a persisted cursor:
+        # - Items with qa_id <= cursor are ignored
+        # - Items with qa_id > cursor are processed
+        config_cursor_id = self._config.qa_raw_last_processed_id.strip()
+        if config_cursor_id:
+            self._raw_archive._parse_qa_id_datetime(config_cursor_id)
+            if config_cursor_id > state.last_processed_qa_id:
+                logger.info(
+                    "Using configured qa_raw_last_processed_id as override. stored=%s config_id=%s",
+                    state.last_processed_qa_id,
+                    config_cursor_id,
                 )
+                state.last_processed_qa_id = config_cursor_id
 
         return state
 

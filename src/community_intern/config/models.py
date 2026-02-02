@@ -89,7 +89,7 @@ class KnowledgeBaseSettings(BaseModel):
 
     # Team knowledge state
     team_state_path: str = "data/team-knowledge/state.json"
-    team_start_qa_timestamp: str = ""
+    qa_raw_last_processed_id: str = ""
 
 
 class AppConfig(BaseModel):

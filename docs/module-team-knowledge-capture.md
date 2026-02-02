@@ -224,14 +224,16 @@ data/team-knowledge/
 
 ```
 --- QA ---
-timestamp: 2026-01-15T14:32:00Z
+id: qa_20260201_031056.228000
+timestamp: 2026-02-01T03:10:56.228000Z
 conversation_id: thread_1458745245675032709
 message_ids: msg_123, msg_124, msg_125
 User: How do I start a Crynux node?
 Team: You can start a node by running the Docker container with the following command...
 
 --- QA ---
-timestamp: 2026-01-16T09:15:00Z
+id: qa_20260201_031057.000000
+timestamp: 2026-02-01T03:10:57.000000Z
 conversation_id: thread_1458745245675032710
 message_ids: msg_200, msg_201, msg_202, msg_203
 User: My node shows GPU not detected, what should I do?
@@ -244,18 +246,41 @@ Raw file metadata fields:
 - `conversation_id`: Thread ID (prefixed with `thread_`) or root message ID (prefixed with `reply_`) for deduplication
 - `message_ids`: Comma-separated list of Discord message IDs included in this capture
 
+### Timestamp and QA ID Specification
+
+This module uses two related identifiers:
+
+- `timestamp`: RFC 3339 timestamp in UTC, ending with `Z`.
+  - Examples: `2026-02-01T03:10:56Z`, `2026-02-01T03:10:56.228000Z`
+- `qa_id`: A stable identifier derived directly from `timestamp`.
+  - Format: `qa_YYYYMMDD_HHMMSS` with an optional fractional seconds suffix.
+  - Examples: `qa_20260201_031056`, `qa_20260201_031056.228000`
+
+Derivation rules:
+
+- Start from the timestamp string and remove separators:
+  - Remove `-` and `:`
+  - Replace `T` with `_`
+  - Remove the trailing `Z`
+- Preserve fractional seconds if present.
+
+Notes:
+
+- Raw archive files must store both `id:` and `timestamp:`. This avoids format drift and ensures state tracking is stable.
+- Topic files must include both `id:` and `timestamp:`. The `id:` must match the derived `qa_id` for that `timestamp`.
+
 **Topic files (Tier 2)** use plain text format optimized for direct LLM consumption and stable diffing:
 
 ```
 --- QA ---
-id: qa_20260115_143200
-timestamp: 2026-01-15T14:32:00Z
+id: qa_20260201_031056.228000
+timestamp: 2026-02-01T03:10:56.228000Z
 User: How do I start a Crynux node?
 Team: You can start a node by running the Docker container...
 
 --- QA ---
-id: qa_20260116_091500
-timestamp: 2026-01-16T09:15:00Z
+id: qa_20260201_031057.000000
+timestamp: 2026-02-01T03:10:57.000000Z
 User: My node shows GPU not detected, what should I do?
 Team: First, make sure your NVIDIA drivers are up to date.
 User: I'm using an RTX 3080
@@ -265,6 +290,7 @@ Team: Then check if Docker has GPU access...
 Format rules:
 - Each Q&A block starts with `--- QA ---`
 - Each block MUST include `id:` and `timestamp:` for stable reference and caching
+- `id:` MUST be the `qa_id` derived from the `timestamp:` value using the rules above
 - Each conversation turn starts with `User:` or `Team:`
 
 ### Index File Format
@@ -401,7 +427,7 @@ kb:
   team_topics_dir: "data/team-knowledge/topics"
   team_index_path: "data/team-knowledge/index-team.txt"
   team_index_cache_path: "data/team-knowledge/index-team-cache.json"
-  team_start_qa_timestamp: ""
+  qa_raw_last_processed_id: ""
 
   team_classification_prompt: |
     You are a topic classifier for a team knowledge base.
@@ -422,16 +448,27 @@ kb:
     ...
 ```
 
-### Start Timestamp Behavior
+### Raw Start Cursor Behavior
 
-`team_start_qa_timestamp` lets operators choose the first raw QA pair to process.
+`qa_raw_last_processed_id` lets operators set a raw processing cursor.
 
 Rules:
-- The value must match a raw QA pair `timestamp` value
-- On startup, the system computes a threshold ID for this timestamp
-- The system compares the threshold ID with `state.json` and uses whichever is newer
-- If `state.json` is missing or older, processing starts from the configured timestamp
-- If `state.json` is newer, processing starts from `state.json`
+- The value must be a valid `qa_id` from the raw archive, for example `qa_20260201_031056.228000`
+- On startup, the system compares this value with `state.json` and uses whichever is newer
+- Items with `qa_id` less than or equal to the chosen cursor are ignored
+- Items with `qa_id` greater than the chosen cursor are processed
+
+### Processing State
+
+The module persists a processing cursor in `state.json` as:
+
+- `last_processed_qa_id`: The most recent `qa_id` that was successfully processed into topic files.
+
+Incremental processing rules:
+
+- On each tick, the raw archive is scanned for entries with `qa_id` greater than `last_processed_qa_id`.
+- If `last_processed_qa_id` is empty, the system loads and processes all raw entries.
+- If `last_processed_qa_id` is not a valid `qa_id` format, the application exits with an error.
 
 ---
 

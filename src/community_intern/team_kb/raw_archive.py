@@ -16,7 +16,7 @@ def get_week_filename(dt: datetime) -> str:
 
 
 def format_raw_qa_pair(qa_pair: QAPair) -> str:
-    lines = ["--- QA ---", f"timestamp: {qa_pair.timestamp}"]
+    lines = ["--- QA ---", f"id: {qa_pair.id}", f"timestamp: {qa_pair.timestamp}"]
     if qa_pair.conversation_id:
         lines.append(f"conversation_id: {qa_pair.conversation_id}")
     if qa_pair.message_ids:
@@ -43,6 +43,7 @@ def parse_raw_file(content: str) -> list[QAPair]:
             continue
 
         lines = entry.split("\n")
+        qa_id = ""
         timestamp = ""
         conversation_id = ""
         message_ids: list[str] = []
@@ -50,7 +51,9 @@ def parse_raw_file(content: str) -> list[QAPair]:
 
         for line in lines:
             stripped_line = line.strip()
-            if stripped_line.startswith("timestamp:"):
+            if stripped_line.startswith("id:"):
+                qa_id = stripped_line[len("id:") :].strip()
+            elif stripped_line.startswith("timestamp:"):
                 timestamp = stripped_line[len("timestamp:"):].strip()
             elif stripped_line.startswith("conversation_id:"):
                 conversation_id = stripped_line[len("conversation_id:"):].strip()
@@ -68,8 +71,26 @@ def parse_raw_file(content: str) -> list[QAPair]:
                 # We use rstrip() to preserve indentation but remove trailing whitespace
                 turns[-1].content += "\n" + line.rstrip()
 
+        if not qa_id:
+            logger.warning("Raw QA entry missing id. Skipping entry.")
+            continue
+        if not timestamp or not turns:
+            logger.warning("Raw QA entry missing required fields. qa_id=%s Skipping entry.", qa_id)
+            continue
+
+        if not qa_id.startswith("qa_"):
+            logger.warning("Raw QA entry has invalid id prefix. qa_id=%s Skipping entry.", qa_id)
+            continue
+
+        if qa_id != f"qa_{timestamp.replace('-', '').replace(':', '').replace('T', '_').replace('Z', '')}":
+            logger.warning(
+                "Raw QA entry id does not match timestamp. qa_id=%s timestamp=%s Skipping entry.",
+                qa_id,
+                timestamp,
+            )
+            continue
+
         if timestamp and turns:
-            qa_id = f"qa_{timestamp.replace('-', '').replace(':', '').replace('T', '_').replace('Z', '')}"
             qa_pairs.append(QAPair(
                 id=qa_id,
                 timestamp=timestamp,
@@ -107,6 +128,16 @@ def deduplicate_by_conversation(qa_pairs: list[QAPair]) -> list[QAPair]:
 class RawArchive:
     def __init__(self, raw_dir: str) -> None:
         self._raw_dir = Path(raw_dir)
+
+    def _parse_qa_id_datetime(self, qa_id: str) -> datetime:
+        value = qa_id.strip()
+        if value.startswith("qa_"):
+            value = value[3:]
+
+        try:
+            return datetime.strptime(value, "%Y%m%d_%H%M%S.%f")
+        except ValueError:
+            return datetime.strptime(value, "%Y%m%d_%H%M%S")
 
     def ensure_dir(self) -> None:
         self._raw_dir.mkdir(parents=True, exist_ok=True)
@@ -176,19 +207,10 @@ class RawArchive:
         if not last_processed_qa_id:
             return self.load_all(deduplicate=True)
 
-        last_dt = None
         try:
-            # qa_id format: qa_20260115_143200
-            raw = last_processed_qa_id.replace("qa_", "")
-            # We don't need full datetime parsing for file selection if we trust the naming convention
-            # But parsing validates the ID format
-            last_dt = datetime.strptime(raw, "%Y%m%d_%H%M%S")
-        except ValueError:
-            logger.warning(
-                "Invalid last_processed_qa_id format: %s. Loading all.",
-                last_processed_qa_id,
-            )
-            return self.load_all(deduplicate=True)
+            last_dt = self._parse_qa_id_datetime(last_processed_qa_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid last_processed_qa_id format: {last_processed_qa_id}") from e
 
         start_week_file = get_week_filename(last_dt)
         files = sorted(self._raw_dir.glob("*.txt"))
