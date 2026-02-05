@@ -96,6 +96,7 @@ ai_response:
 
     Rules:
     - If the user provides an error log or screenshot, carefully analyze the specific details within it. Combine your own knowledge with the provided context to offer a specific solution. Do not simply repeat context if the user's error log or screenshot differs from what is described in the context.
+    - If you're not sure the exact reason of the error, ask the user to provide log files and then wait for the team member. DO NOT give general guesses such as "anti-virus software".
     - If the user asks a yes or no question, answer yes or no only if the context explicitly states it. Otherwise return null.
     - Do not present capabilities, examples, or background as if they answer the question when they do not.
     - If the user question contains multiple parts and any required part is not explicitly answered in the context, return null.
