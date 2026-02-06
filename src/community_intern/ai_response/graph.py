@@ -13,6 +13,7 @@ from community_intern.llm.image_adapters import ContentPart, ImagePart, LLMImage
 from community_intern.core.models import AttachmentInput, Conversation, ImageInput, Message, RequestContext, AIResult
 from community_intern.kb.interfaces import KnowledgeBase, SourceContent
 from community_intern.llm.prompts import compose_system_prompt
+from community_intern.core.formatters import format_message_as_text, format_conversation_as_text
 
 logger = logging.getLogger(__name__)
 
@@ -72,53 +73,9 @@ def _build_user_message(
         content = text
     return HumanMessage(content=content)
 
-def _format_conversation_history(conversation: Conversation) -> str:
-    lines: list[str] = []
-    for msg in conversation.messages:
-        text = _format_message_text(msg)
-        if not text:
-            continue
-        if msg.role == "user":
-            role = "User"
-        elif msg.role == "assistant":
-            role = "You"
-        else:
-            role = "System"
-        lines.append(f"{role}: {text}")
-    return "\n".join(lines).strip()
 
 
-def _format_message_text(msg: Message) -> str:
-    text_lines: list[str] = []
-    raw_text = (msg.text or "").strip()
-    if raw_text:
-        text_lines.append(raw_text)
-    if msg.attachments:
-        for attachment in msg.attachments:
-            text_lines.append(_attachment_placeholder_line(attachment))
-    if not text_lines and msg.images:
-        for line in _build_image_placeholders_from_images(msg.images):
-            text_lines.append(line)
-    return "\n".join(text_lines).strip()
 
-
-def _build_image_placeholders_from_images(images: Sequence[ImageInput]) -> list[str]:
-    placeholders: list[str] = []
-    for image in images:
-        filename = (image.filename or "").strip()
-        if filename:
-            placeholders.append(f"Image: {filename}")
-        else:
-            placeholders.append("Image: file uploaded")
-    return placeholders
-
-
-def _attachment_placeholder_line(attachment: AttachmentInput) -> str:
-    filename = (attachment.filename or "").strip()
-    label = "Image" if attachment.is_image else "Attachment"
-    if filename:
-        return f"{label}: {filename}"
-    return f"{label}: file uploaded"
 
 
 async def node_gating(
@@ -128,7 +85,11 @@ async def node_gating(
     conversation = state["conversation"]
     parts = state.get("user_parts", [])
 
-    last_msg = _format_message_text(conversation.messages[-1]) if conversation.messages else ""
+    last_msg = format_message_as_text(conversation.messages[-1]) if conversation.messages else ""
+    if last_msg:
+        last_msg = "\n".join(last_msg)
+    else:
+        last_msg = ""
     if not last_msg and parts:
         last_msg = "User provided images without additional text."
 
@@ -137,7 +98,7 @@ async def node_gating(
         method=config.llm.structured_output_method,
     )
 
-    history_text = _format_conversation_history(conversation)
+    history_text = format_conversation_as_text(conversation)
     history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
     messages = [
         SystemMessage(
@@ -190,7 +151,7 @@ async def node_selection(
         method=config.llm.structured_output_method,
     )
 
-    history_text = _format_conversation_history(conversation)
+    history_text = format_conversation_as_text(conversation)
     history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
     messages = [
         SystemMessage(
@@ -255,7 +216,7 @@ async def node_generation(
         method=config.llm.structured_output_method,
     )
 
-    history_text = _format_conversation_history(conversation)
+    history_text = format_conversation_as_text(conversation)
     history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
     messages = [
         SystemMessage(
@@ -308,7 +269,7 @@ async def node_verification(
         method=config.llm.structured_output_method,
     )
 
-    history_text = _format_conversation_history(conversation)
+    history_text = format_conversation_as_text(conversation)
     history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
     messages = [
         SystemMessage(

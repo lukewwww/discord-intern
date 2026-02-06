@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field
 from community_intern.adapters.discord.handlers import ActionHandler
 from community_intern.adapters.discord.classifier import MessageClassifier
 from community_intern.adapters.discord.models import GatheredContext, MessageContext
-from community_intern.llm.image_transport import download_images_as_base64
+from community_intern.adapters.discord.utils import (
+    extract_image_inputs,
+    download_image_inputs,
+    is_image_attachment,
+)
+from community_intern.core.formatters import format_attachment_placeholder
 from community_intern.llm.prompts import compose_system_prompt
 from community_intern.core.models import ImageInput
 from community_intern.knowledge_cache.utils import format_rfc3339
@@ -21,20 +26,6 @@ if TYPE_CHECKING:
     from community_intern.team_kb.team_kb_manager import TeamKnowledgeManager
 
 logger = logging.getLogger(__name__)
-
-_IMAGE_EXTENSIONS = {
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".webp",
-    ".bmp",
-    ".tif",
-    ".tiff",
-    ".heic",
-    ".heif",
-    ".avif",
-}
 
 
 class ImageSummaryItem(BaseModel):
@@ -292,12 +283,12 @@ class QACaptureHandler(ActionHandler):
     async def _summarize_images(self, messages: list[discord.Message]) -> dict[str, list[tuple[int, str]]]:
         image_items: list[tuple[str, int, ImageInput]] = []
         for msg in messages:
-            inputs = _extract_image_inputs(msg)
+            inputs = extract_image_inputs(msg)
             if not inputs:
                 continue
             msg_id = str(msg.id)
             try:
-                images_with_payload = await _download_image_inputs(
+                images_with_payload = await download_image_inputs(
                     inputs,
                     timeout_seconds=self._image_download_timeout_seconds,
                     max_retries=self._image_download_max_retries,
@@ -347,67 +338,6 @@ class QACaptureHandler(ActionHandler):
         return summaries
 
 
-def _is_image_attachment(attachment: discord.Attachment) -> bool:
-    content_type = attachment.content_type
-    if content_type:
-        return content_type.startswith("image/")
-    if attachment.filename:
-        lower = attachment.filename.lower()
-        for ext in _IMAGE_EXTENSIONS:
-            if lower.endswith(ext):
-                return True
-    return False
-
-
-def _extract_image_inputs(message: discord.Message) -> list[ImageInput]:
-    images: list[ImageInput] = []
-    for attachment in message.attachments:
-        if not _is_image_attachment(attachment):
-            continue
-        images.append(
-            ImageInput(
-                url=attachment.url,
-                mime_type=attachment.content_type,
-                filename=attachment.filename,
-                size_bytes=attachment.size,
-                source="discord",
-            )
-        )
-    return images
-
-
-async def _download_image_inputs(
-    images: list[ImageInput],
-    *,
-    timeout_seconds: float,
-    max_retries: int,
-) -> list[ImageInput]:
-    if not images:
-        return []
-    base64_images = await download_images_as_base64(
-        images,
-        timeout_seconds=timeout_seconds,
-        max_retries=max_retries,
-    )
-    by_url = {img.source_url: img for img in base64_images}
-    enriched: list[ImageInput] = []
-    for image in images:
-        payload = by_url.get(image.url)
-        if payload is None:
-            continue
-        enriched.append(
-            ImageInput(
-                url=image.url,
-                mime_type=payload.mime_type or image.mime_type,
-                filename=image.filename,
-                size_bytes=image.size_bytes,
-                source=image.source,
-                base64_data=payload.base64_data,
-            )
-        )
-    return enriched
-
-
 def _format_conversation_context(
     messages: list[discord.Message],
     *,
@@ -429,7 +359,7 @@ def _format_conversation_context(
         if raw_content:
             content_lines.append(raw_content)
         content_lines.extend(_build_non_image_attachment_placeholders(msg))
-        if not content_lines and any(_is_image_attachment(att) for att in msg.attachments):
+        if not content_lines and any(is_image_attachment(att) for att in msg.attachments):
             content_lines.append("Image-only message.")
         if content_lines:
             lines.append(f"{role}: {'\\n'.join(content_lines)}")
@@ -450,13 +380,15 @@ def _build_message_text_with_summaries(
     image_index = 0
     if message.attachments:
         for attachment in message.attachments:
-            if _is_image_attachment(attachment):
+            if is_image_attachment(attachment):
                 image_index += 1
                 summary = summary_map.get(image_index, "").strip()
                 if summary:
                     attachment_lines.append(f"Image summary ({image_index}): {summary}")
             else:
-                attachment_lines.append(_attachment_placeholder_line(attachment))
+                attachment_lines.append(
+                    format_attachment_placeholder(attachment.filename, is_image=False)
+                )
     elif summaries:
         for idx, summary in sorted(summaries, key=lambda item: item[0]):
             summary_text = summary.strip()
@@ -469,14 +401,11 @@ def _build_message_text_with_summaries(
 def _build_non_image_attachment_placeholders(message: discord.Message) -> list[str]:
     placeholders: list[str] = []
     for attachment in message.attachments:
-        if _is_image_attachment(attachment):
+        if is_image_attachment(attachment):
             continue
-        placeholders.append(_attachment_placeholder_line(attachment))
+        placeholders.append(
+            format_attachment_placeholder(attachment.filename, is_image=False)
+        )
     return placeholders
 
 
-def _attachment_placeholder_line(attachment: discord.Attachment) -> str:
-    filename = (attachment.filename or "").strip()
-    if filename:
-        return f"Attachment: {filename}"
-    return "Attachment: file uploaded"
