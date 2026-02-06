@@ -27,7 +27,7 @@ def format_topic_block(qa: QAPair) -> str:
         elif turn.role == "team":
             lines.extend(_format_turn_lines(role="Team", content=turn.content))
         elif turn.role == "bot":
-            lines.extend(_format_turn_lines(role="Bot", content=turn.content))
+            lines.extend(_format_turn_lines(role="You", content=turn.content))
     lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

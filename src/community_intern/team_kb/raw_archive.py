@@ -25,7 +25,7 @@ def format_raw_qa_pair(qa_pair: QAPair) -> str:
         if turn.role == "user":
             prefix = "User:"
         elif turn.role == "bot":
-            prefix = "Bot:"
+            prefix = "You:"
         else:
             prefix = "Team:"
         lines.append(f"{prefix} {turn.content}")
@@ -64,8 +64,8 @@ def parse_raw_file(content: str) -> list[QAPair]:
                 turns.append(Turn(role="user", content=stripped_line[len("User:") :].strip()))
             elif stripped_line.startswith("Team:"):
                 turns.append(Turn(role="team", content=stripped_line[len("Team:") :].strip()))
-            elif stripped_line.startswith("Bot:"):
-                turns.append(Turn(role="bot", content=stripped_line[len("Bot:") :].strip()))
+            elif stripped_line.startswith("You:"):
+                turns.append(Turn(role="bot", content=stripped_line[len("You:") :].strip()))
             elif turns:
                 # If the line doesn't start with a known prefix, it's a continuation of the previous turn
                 # We use rstrip() to preserve indentation but remove trailing whitespace

@@ -189,7 +189,7 @@ class QACaptureHandler(ActionHandler):
             if author_type == "community_user":
                 role = "user"
             elif author_type == "bot":
-                continue
+                role = "bot"
             else:
                 role = "team"
             text = (msg.content or "").strip()
@@ -229,7 +229,7 @@ class QACaptureHandler(ActionHandler):
             if group.author_type == "community_user":
                 role = "user"
             elif group.author_type == "bot":
-                continue
+                role = "bot"
             else:
                 role = "team"
             for msg in group.messages:
@@ -259,9 +259,7 @@ class QACaptureHandler(ActionHandler):
             if text:
                 if msg.author is not None and self._classifier is not None:
                     author_type = self._classifier.classify_author(msg.author.id)
-                    if author_type == "bot":
-                        continue
-                    role = "team"
+                    role = "bot" if author_type == "bot" else "team"
                 else:
                     role = "team"
                 turns.append(Turn(role=role, content=text))
@@ -450,11 +448,11 @@ def _format_conversation_context(
         if author_type == "community_user":
             role = "User"
         elif author_type == "bot":
-            role = "Bot"
+            role = "You"
         else:
             role = "Team"
         content = (msg.content or "").strip()
         if not content:
             content = "Image-only message."
-        lines.append(f"{role}({msg.id}): {content}")
+        lines.append(f"{role}: {content}")
     return "\n".join(lines).strip()

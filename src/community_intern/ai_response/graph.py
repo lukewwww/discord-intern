@@ -72,6 +72,24 @@ def _build_user_message(
         content = text
     return HumanMessage(content=content)
 
+def _format_conversation_history(conversation: Conversation) -> str:
+    lines: list[str] = []
+    for msg in conversation.messages:
+        text = (msg.text or "").strip()
+        if not text:
+            if msg.images:
+                text = "Image-only message."
+            else:
+                continue
+        if msg.role == "user":
+            role = "User"
+        elif msg.role == "assistant":
+            role = "You"
+        else:
+            role = "System"
+        lines.append(f"{role}: {text}")
+    return "\n".join(lines).strip()
+
 
 async def node_gating(
     state: GraphState, *, llm: "ChatOpenAI", image_adapter: LLMImageAdapter
@@ -89,6 +107,8 @@ async def node_gating(
         method=config.llm.structured_output_method,
     )
 
+    history_text = _format_conversation_history(conversation)
+    history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
     messages = [
         SystemMessage(
             content=compose_system_prompt(
@@ -97,7 +117,7 @@ async def node_gating(
             )
         ),
         _build_user_message(
-            text=f"User input: {last_msg}",
+            text=f"{history_block}User input: {last_msg}",
             parts=parts,
             adapter=image_adapter,
             enable_images=config.llm_enable_image,
@@ -124,6 +144,7 @@ async def node_selection(
     config = state["config"]
     kb = state["kb"]
     query = state["user_question"]
+    conversation = state["conversation"]
     parts = state.get("user_parts", [])
     if not query and parts:
         query = "User provided images without additional text."
@@ -139,6 +160,8 @@ async def node_selection(
         method=config.llm.structured_output_method,
     )
 
+    history_text = _format_conversation_history(conversation)
+    history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
     messages = [
         SystemMessage(
             content=compose_system_prompt(
@@ -147,7 +170,7 @@ async def node_selection(
             )
         ),
         _build_user_message(
-            text=f"Index:\n{kb_index_text}\n\nQuery: {query}",
+            text=f"{history_block}Index:\n{kb_index_text}\n\nQuery: {query}",
             parts=parts,
             adapter=image_adapter,
             enable_images=config.llm_enable_image,
@@ -190,6 +213,7 @@ async def node_generation(
     config = state["config"]
     loaded = state["loaded_sources"]
     query = state["user_question"]
+    conversation = state["conversation"]
     parts = state.get("user_parts", [])
     if not query and parts:
         query = "User provided images without additional text."
@@ -201,6 +225,8 @@ async def node_generation(
         method=config.llm.structured_output_method,
     )
 
+    history_text = _format_conversation_history(conversation)
+    history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
     messages = [
         SystemMessage(
             content=compose_system_prompt(
@@ -209,7 +235,7 @@ async def node_generation(
             )
         ),
         _build_user_message(
-            text=f"Context:\n{sources_text}\n\nQuestion: {query}",
+            text=f"{history_block}Context:\n{sources_text}\n\nQuestion: {query}",
             parts=parts,
             adapter=image_adapter,
             enable_images=config.llm_enable_image,
@@ -242,6 +268,7 @@ async def node_verification(
     config = state["config"]
     draft = state["draft_answer"]
     loaded = state["loaded_sources"]
+    conversation = state["conversation"]
     parts = state.get("user_parts", [])
 
     sources_text = "\n\n".join([f"Source: {s.source_id}\nContent:\n{s.text}" for s in loaded])
@@ -251,6 +278,8 @@ async def node_verification(
         method=config.llm.structured_output_method,
     )
 
+    history_text = _format_conversation_history(conversation)
+    history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
     messages = [
         SystemMessage(
             content=compose_system_prompt(
@@ -259,7 +288,7 @@ async def node_verification(
             )
         ),
         _build_user_message(
-            text=f"Context:\n{sources_text}\n\nDraft Answer: {draft}",
+            text=f"{history_block}Context:\n{sources_text}\n\nDraft Answer: {draft}",
             parts=parts,
             adapter=image_adapter,
             enable_images=config.llm_enable_image,

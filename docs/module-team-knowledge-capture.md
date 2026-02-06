@@ -22,8 +22,9 @@ The module captures knowledge from team member replies in Discord and makes it a
 
 Messages from configured team member Discord accounts receive special handling:
 - Team member messages do not trigger the AI response workflow
-- When a team member replies to a community user (via Discord reply or thread), the Q&A exchange is captured for the knowledge base
-- Bot messages are not stored in the team knowledge base
+- When a team member replies to a community user via Discord reply or thread, the Q&A exchange is captured for the knowledge base
+- Bot-only exchanges are never captured; bot messages are stored only when a team member reply is present
+- Bot messages that appear in the same conversation are stored and labeled as `You:`
 
 ### F3: Complete Conversation Capture
 
@@ -229,7 +230,8 @@ timestamp: 2026-02-01T03:10:56.228000Z
 conversation_id: thread_1458745245675032709
 message_ids: msg_123, msg_124, msg_125
 User: How do I start a Crynux node?
-Team: You can start a node by running the Docker container with the following command...
+You: You can start a node by running the Docker container with the following command...
+Team: Run the container with the Docker command in the node setup guide.
 
 --- QA ---
 id: qa_20260201_031057.000000
@@ -276,6 +278,7 @@ Notes:
 id: qa_20260201_031056.228000
 timestamp: 2026-02-01T03:10:56.228000Z
 User: How do I start a Crynux node?
+You: You can start a node by running the Docker container...
 Team: You can start a node by running the Docker container...
 
 --- QA ---
@@ -291,7 +294,7 @@ Format rules:
 - Each Q&A block starts with `--- QA ---`
 - Each block MUST include `id:` and `timestamp:` for stable reference and caching
 - `id:` MUST be the `qa_id` derived from the `timestamp:` value using the rules above
-- Each conversation turn starts with `User:` or `Team:`
+- Each conversation turn starts with `User:`, `Team:`, or `You:`
 
 ### Index File Format
 
