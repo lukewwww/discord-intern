@@ -153,10 +153,15 @@ async def node_selection(
 
     history_text = format_conversation_as_text(conversation)
     history_block = f"Conversation history:\n{history_text}\n\n" if history_text else ""
+    # Append max_sources instruction to the base prompt
+    base_prompt = config.selection_prompt
+    if config.max_sources > 0:
+        base_prompt = f"{base_prompt.strip()}\n\nSelect at most {config.max_sources} sources."
+
     messages = [
         SystemMessage(
             content=compose_system_prompt(
-                base_prompt=config.selection_prompt,
+                base_prompt=base_prompt,
                 project_introduction=config.project_introduction,
             )
         ),
